@@ -1,0 +1,655 @@
+[
+  {
+    "id": "poi-001",
+    "name": "太古里北区轻食小馆",
+    "category": "food",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "三里屯",
+    "address": "三里屯太古里北区西侧 2 层",
+    "latitude": 39.9368,
+    "longitude": 116.4542,
+    "rating": 4.7,
+    "review_count": 2186,
+    "avg_price": 138,
+    "open_hours": "11:00-22:00",
+    "business_status": "营业中",
+    "queue_minutes": 8,
+    "visit_duration_minutes": 65,
+    "tags": ["约会", "低排队", "轻食", "桌距舒服", "三里屯开场"],
+    "platform_badges": ["三里屯轻食好评榜 Top 8", "朝阳约会餐厅热度上升"],
+    "service_options": ["可预订", "团购套餐", "有靠窗位", "支持收藏"],
+    "deal_summary": "双人轻食套餐 198 元，含主菜、沙拉和饮品。",
+    "booking_hint": "14:00-16:30 通常可订靠窗位，18:00 后排队和噪声都会上升。",
+    "ugc_summary": "近期评价集中在环境安静、桌距舒服、出餐稳定，适合作为约会开场；负面反馈主要是晚饭点人流变大。",
+    "ugc_highlights": [
+      {
+        "label": "氛围",
+        "sentiment": "positive",
+        "text": "下午桌距舒服，聊天不用提高音量。",
+        "signal": "约会开场稳定"
+      },
+      {
+        "label": "排队",
+        "sentiment": "positive",
+        "text": "两三点翻台快，基本不用长等。",
+        "signal": "低排队"
+      },
+      {
+        "label": "口味",
+        "sentiment": "neutral",
+        "text": "口味偏清爽，不适合想吃重口的人。",
+        "signal": "降低重口味踩雷"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "命中餐饮、低排队、约会氛围三项核心需求，适合从三里屯公开商圈开场。",
+      "queue_reason": "当前 Mock 排队 8 分钟，低于低排队用户 10 分钟阈值。",
+      "open_reason": "14:20 到店处于连续营业时段，不会撞上午休或闭店。",
+      "price_reason": "人均 138 元，低于默认约会用户 320 元路线预算。",
+      "ugc_reason": "UGC 高频提到安静、桌距舒服、出餐稳定。",
+      "user_fit": "适合不想把第一站变成排队等待的约会用户。",
+      "rejected_reason": "若用户明确想吃重口、热闹或夜宵，这家会因为口味清淡和晚高峰噪声被降级。"
+    },
+    "risk_notes": ["18:00 后排队上升", "重口味偏好用户可能觉得清淡", "靠窗位需提前订"]
+  },
+  {
+    "id": "poi-002",
+    "name": "红砖美术馆花园展",
+    "category": "culture",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "崔各庄",
+    "address": "顺白路马泉营西路路口东北侧",
+    "latitude": 40.0298,
+    "longitude": 116.501,
+    "rating": 4.8,
+    "review_count": 6480,
+    "avg_price": 80,
+    "open_hours": "10:00-17:00",
+    "business_status": "营业中",
+    "queue_minutes": 5,
+    "visit_duration_minutes": 65,
+    "tags": ["看展", "拍照", "安静", "低排队", "室内外结合"],
+    "platform_badges": ["北京美术馆好评榜 Top 8", "朝阳安静看展榜 Top 6"],
+    "service_options": ["线上购票", "停车场", "咖啡简餐", "可收藏"],
+    "deal_summary": "单人展票 80 元，线上购票可直接核销。",
+    "booking_hint": "建议 15:45 前抵达；闭馆前一小时不适合临时加长停留。",
+    "ugc_summary": "评价里常见“建筑好拍”“庭院安静”“动线慢”，适合作为低排队约会的中段体验；主要风险是闭馆时间比商场类 POI 早。",
+    "ugc_highlights": [
+      {
+        "label": "体验",
+        "sentiment": "positive",
+        "text": "展厅和庭院都能慢慢走，不会一直挤在人群里。",
+        "signal": "安静慢逛"
+      },
+      {
+        "label": "拍照",
+        "sentiment": "positive",
+        "text": "红砖建筑和庭院层次好，不需要排队抢机位。",
+        "signal": "出片且低拥挤"
+      },
+      {
+        "label": "时间",
+        "sentiment": "neutral",
+        "text": "闭馆前会催场，太晚来就不从容。",
+        "signal": "需要营业时间检查"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "补足文化体验和拍照需求，排队短且 UGC 支持安静慢逛。",
+      "queue_reason": "线上购票后现场 Mock 排队约 5 分钟，低于低排队阈值。",
+      "open_reason": "15:45 到店可完成 65 分钟游览，约束检查需避免 16:00 后才抵达。",
+      "price_reason": "门票 80 元，价格清晰，预算风险低。",
+      "ugc_reason": "UGC 同时支持“安静”“好拍”“适合边走边聊”。",
+      "user_fit": "适合约会中段从吃饭切换到轻文化体验。",
+      "rejected_reason": "若用户要求全部站点集中在三里屯/亮马河，这个点会因地理位置偏北、通勤更长被降级。"
+    },
+    "risk_notes": ["闭馆较早", "从三里屯到崔各庄通勤需要地图 provider 复核", "雨天室外庭院体验下降"]
+  },
+  {
+    "id": "poi-003",
+    "name": "亮马河露台甜品",
+    "category": "dessert",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "亮马桥",
+    "address": "亮马河国际风情水岸商业街 2 层露台区",
+    "latitude": 39.9525,
+    "longitude": 116.4686,
+    "rating": 4.6,
+    "review_count": 1560,
+    "avg_price": 76,
+    "open_hours": "13:00-23:00",
+    "business_status": "营业中",
+    "queue_minutes": 3,
+    "visit_duration_minutes": 55,
+    "tags": ["甜品", "夜景", "松弛", "低排队", "河边收尾"],
+    "platform_badges": ["亮马桥甜品热门榜 Top 6", "亮马河夜景打卡榜 Top 10"],
+    "service_options": ["团购券", "露台座", "可打包", "支持收藏"],
+    "deal_summary": "双人甜品饮品券 89 元，周末可用。",
+    "booking_hint": "露台位不保证保留，17:30 前到店更稳；天气差时可切室内座。",
+    "ugc_summary": "露台座位周转快，甜品出品稳定，日落后氛围好，适合作为路线收尾。",
+    "ugc_highlights": [
+      {
+        "label": "排队",
+        "sentiment": "positive",
+        "text": "下午到傍晚翻台快，通常不用等很久。",
+        "signal": "收尾等待风险低"
+      },
+      {
+        "label": "氛围",
+        "sentiment": "positive",
+        "text": "傍晚灯开起来后比白天更有感觉。",
+        "signal": "适合日落后收尾"
+      },
+      {
+        "label": "价格",
+        "sentiment": "neutral",
+        "text": "单点略贵，团购券更划算。",
+        "signal": "团购入口有价值"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "用低排队甜品点承接看展后的休息和聊天，亮马河公共空间适合收尾。",
+      "queue_reason": "当前 Mock 排队 3 分钟，是甜品候选里等待最短的一档。",
+      "open_reason": "营业到 23:00，17:30 后抵达也没有闭店压力。",
+      "price_reason": "人均 76 元，可用团购券控制预算。",
+      "ugc_reason": "UGC 高频提到露台、日落、出品稳定。",
+      "user_fit": "适合约会路线最后一站，情绪从看展过渡到放松聊天。",
+      "rejected_reason": "若天气很差且用户坚持露台景观，这家会因露台不可控被降级到室内商场甜品。"
+    },
+    "risk_notes": ["露台位受天气影响", "周五晚高峰可能比 Mock 多等 10 分钟", "临河座位不保证"]
+  },
+  {
+    "id": "poi-004",
+    "name": "798 小幅影像展",
+    "category": "culture",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "798",
+    "address": "酒仙桥路 4 号 798 艺术区 E 区",
+    "latitude": 39.9848,
+    "longitude": 116.4921,
+    "rating": 4.7,
+    "review_count": 1180,
+    "avg_price": 58,
+    "open_hours": "10:30-19:00",
+    "business_status": "营业中",
+    "queue_minutes": 6,
+    "visit_duration_minutes": 90,
+    "tags": ["小众展", "拍照", "室内", "可慢逛", "798"],
+    "platform_badges": ["798 展览热度榜 Top 10", "酒仙桥拍照友好榜 Top 12"],
+    "service_options": ["线上购票", "园区停车", "可收藏"],
+    "deal_summary": "单人票 58 元，双人票 108 元。",
+    "booking_hint": "特展票需提前 1 天预约，今天临时计划不能保证入场；周末停车也需更早到。",
+    "booking_required": true,
+    "advance_booking_hours": 24,
+    "purchasable_until_minutes_before": 1440,
+    "ugc_summary": "展览光线好、体量不大，适合想拍照但不想挤热门大展的用户。",
+    "ugc_highlights": [
+      {
+        "label": "人流",
+        "sentiment": "positive",
+        "text": "比主街几家大展安静，下午去也能好好看。",
+        "signal": "低拥挤度"
+      },
+      {
+        "label": "拍照",
+        "sentiment": "positive",
+        "text": "白墙和影像装置很适合拍半身照。",
+        "signal": "出片"
+      },
+      {
+        "label": "动线",
+        "sentiment": "neutral",
+        "text": "园区里好逛，但周末停车和主街人流要预留。",
+        "signal": "地图与时间缓冲"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "作为“文艺出片路线”的第一站，拍照和低拥挤都更突出。",
+      "queue_reason": "线上购票后 Mock 排队约 6 分钟。",
+      "open_reason": "19:00 闭展，下午路线有足够余量。",
+      "price_reason": "票价 58 元，适合预算更轻的方案。",
+      "ugc_reason": "UGC 显示人流和拍照体验稳定。",
+      "user_fit": "适合更看重拍照和小众感的约会用户。",
+      "rejected_reason": "默认低排队路线里会被红砖展压过，因为红砖的安静和低排队信号更强；当用户强调拍照时会升为首选。"
+    },
+    "risk_notes": ["园区周末停车紧张", "展览内容更偏小众", "餐饮需要另配"]
+  },
+  {
+    "id": "poi-005",
+    "name": "798 白盒子咖啡",
+    "category": "dessert",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "798",
+    "address": "798 艺术区七星东街白色门头旁",
+    "latitude": 39.9841,
+    "longitude": 116.4934,
+    "rating": 4.5,
+    "review_count": 760,
+    "avg_price": 52,
+    "open_hours": "11:00-21:30",
+    "business_status": "营业中",
+    "queue_minutes": 4,
+    "visit_duration_minutes": 55,
+    "tags": ["咖啡", "安静", "可坐久", "展后休息", "步行可达"],
+    "platform_badges": ["798 咖啡好评榜 Top 15"],
+    "service_options": ["团购券", "可外带", "少量插座", "支持收藏"],
+    "deal_summary": "双杯咖啡券 56 元，非高峰可用。",
+    "booking_hint": "不接受订座，15:00-17:00 翻台较快；热门展结束后会短时满座。",
+    "ugc_summary": "座位周转较快，常被评价为适合展后休息，咖啡口味稳定但不是强网红店。",
+    "ugc_highlights": [
+      {
+        "label": "动线",
+        "sentiment": "positive",
+        "text": "看完展走几分钟就到，不用再打车。",
+        "signal": "移动距离短"
+      },
+      {
+        "label": "氛围",
+        "sentiment": "positive",
+        "text": "音乐不吵，聊天比较舒服。",
+        "signal": "适合休息"
+      },
+      {
+        "label": "目的性",
+        "sentiment": "neutral",
+        "text": "不是专程打卡的店，但作为中场休息很稳。",
+        "signal": "路线承接"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "在 798 内承接展后休息，减少跨区移动。",
+      "queue_reason": "Mock 排队 4 分钟，周末下午可接受。",
+      "open_reason": "营业到 21:30，时间弹性较好。",
+      "price_reason": "人均 52 元，团购可进一步降低成本。",
+      "ugc_reason": "UGC 支持安静、近、可坐久。",
+      "user_fit": "适合用户说“少走路、想拍照”的替代路线。",
+      "rejected_reason": "若用户要强甜品或夜景收尾，这家会被亮马河/蓝港甜品压过，因为目的地感较弱。"
+    },
+    "risk_notes": ["座位不保证", "咖啡不是强特色目的地", "热门展散场后会短时拥挤"]
+  },
+  {
+    "id": "poi-006",
+    "name": "霄云路云南小馆",
+    "category": "food",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "三元桥",
+    "address": "霄云路支巷院内 2 层",
+    "latitude": 39.9587,
+    "longitude": 116.4658,
+    "rating": 4.6,
+    "review_count": 2340,
+    "avg_price": 132,
+    "open_hours": "11:00-14:30, 17:00-22:00",
+    "business_status": "营业中",
+    "queue_minutes": 10,
+    "visit_duration_minutes": 75,
+    "tags": ["云南菜", "可订位", "朋友聚餐", "不重口", "晚餐稳定"],
+    "platform_badges": ["三元桥云南菜热门榜 Top 5", "朝阳朋友聚餐好评榜 Top 12"],
+    "service_options": ["可预订", "多人桌", "团购套餐", "支持收藏"],
+    "deal_summary": "四人套餐 498 元，含汽锅鸡和招牌小炒。",
+    "booking_hint": "17:00 前可订 4 人桌，19:00 后建议提前电话确认。",
+    "ugc_summary": "招牌菜口味温和，环境不像网红店那么吵，适合晚餐风险偏低的聚会。",
+    "ugc_highlights": [
+      {
+        "label": "口味",
+        "sentiment": "positive",
+        "text": "汽锅鸡和菌子菜稳定，外地朋友也能接受。",
+        "signal": "口味风险低"
+      },
+      {
+        "label": "订位",
+        "sentiment": "positive",
+        "text": "提前订位基本不用在门口等。",
+        "signal": "适合临时聚餐"
+      },
+      {
+        "label": "时段",
+        "sentiment": "neutral",
+        "text": "午市和晚市之间会休息，别卡 15 点去。",
+        "signal": "营业时间约束"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "适合朋友晚饭或文艺路线收尾，订位确定性好。",
+      "queue_reason": "有订位时 Mock 排队约 10 分钟，刚好卡住低排队上限。",
+      "open_reason": "晚市 17:00 开始，适合展后晚餐；午晚市间隔需要约束检查。",
+      "price_reason": "人均 132 元，低于朋友聚餐 180 元预算。",
+      "ugc_reason": "UGC 显示口味稳定、环境不吵。",
+      "user_fit": "适合不想踩雷、又不想太正式的朋友聚餐。",
+      "rejected_reason": "如果用户要求 15:00 左右就吃正餐，这家会因午晚市间隔被排除。"
+    },
+    "risk_notes": ["不订位时晚高峰排队可能超过 25 分钟", "午市和晚市之间有休息", "不适合强仪式感纪念日"]
+  },
+  {
+    "id": "poi-007",
+    "name": "蓝港日料小食堂",
+    "category": "food",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "蓝色港湾",
+    "address": "朝阳公园路 6 号蓝色港湾 B1 扶梯旁",
+    "latitude": 39.9441,
+    "longitude": 116.4748,
+    "rating": 4.5,
+    "review_count": 1510,
+    "avg_price": 105,
+    "open_hours": "10:30-21:30",
+    "business_status": "营业中",
+    "queue_minutes": 7,
+    "visit_duration_minutes": 60,
+    "tags": ["日料", "商场内", "亲子友好", "低排队", "雨天稳定"],
+    "platform_badges": ["蓝色港湾日料好评榜 Top 9", "亲子友好餐厅热度上升"],
+    "service_options": ["在线排号", "儿童椅", "商场停车", "儿童餐具"],
+    "deal_summary": "双人定食券 168 元，儿童餐可单点。",
+    "booking_hint": "商场内翻台稳定，雨天也不影响动线；儿童椅高峰期需到店确认。",
+    "ugc_summary": "翻台稳定，商场动线清楚，口味温和，适合亲子或少走路路线。",
+    "ugc_highlights": [
+      {
+        "label": "亲子",
+        "sentiment": "positive",
+        "text": "有儿童椅，定食上菜快。",
+        "signal": "孩子等待压力低"
+      },
+      {
+        "label": "天气",
+        "sentiment": "positive",
+        "text": "下雨天也不用出商场。",
+        "signal": "室内可执行"
+      },
+      {
+        "label": "口味",
+        "sentiment": "neutral",
+        "text": "口味安全，但惊喜感一般。",
+        "signal": "省心优先"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "适合作为雨天亲子或少走路路线第一站。",
+      "queue_reason": "Mock 排队 7 分钟，且可在线排号。",
+      "open_reason": "午后持续营业，时间窗口稳定。",
+      "price_reason": "人均 105 元，低于亲子用户 160 元预算。",
+      "ugc_reason": "UGC 支持翻台快、儿童椅、室内动线。",
+      "user_fit": "适合希望省心、怕天气影响的家庭用户。",
+      "rejected_reason": "若用户是安静约会，这家会因亲子客流和商场感被降级。"
+    },
+    "risk_notes": ["饭点儿童较多，安静约会感弱", "儿童椅数量有限", "不是强特色餐厅"]
+  },
+  {
+    "id": "poi-008",
+    "name": "SOLANA 湖边慢逛区",
+    "category": "shopping",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "蓝色港湾",
+    "address": "朝阳公园路 6 号蓝色港湾湖畔步道与中庭连廊",
+    "latitude": 39.9445,
+    "longitude": 116.476,
+    "rating": 4.4,
+    "review_count": 4200,
+    "avg_price": 0,
+    "open_hours": "10:00-22:00",
+    "business_status": "营业中",
+    "queue_minutes": 0,
+    "visit_duration_minutes": 65,
+    "tags": ["散步", "夜景", "少走路", "室内外切换", "亲子友好"],
+    "platform_badges": ["北京夜景逛街热门地", "朝阳亲子慢逛榜 Top 10"],
+    "service_options": ["商场停车", "母婴室", "公共休息区", "无预约"],
+    "deal_summary": null,
+    "booking_hint": "无需预约，雨天可走连廊和室内店铺；亲子用户可就近使用商场设施。",
+    "ugc_summary": "路线平坦、拍照点集中，不需要频繁换地点，适合少走路或亲子路线。",
+    "ugc_highlights": [
+      {
+        "label": "动线",
+        "sentiment": "positive",
+        "text": "湖边和室内连廊可以随时切换。",
+        "signal": "天气兜底"
+      },
+      {
+        "label": "体力",
+        "sentiment": "positive",
+        "text": "不赶时间的话，走走停停很舒服。",
+        "signal": "少走路"
+      },
+      {
+        "label": "消费",
+        "sentiment": "neutral",
+        "text": "不强制消费，但需要搭配餐饮才像完整路线。",
+        "signal": "组合价值"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "补足逛和拍照，同时几乎没有排队风险。",
+      "queue_reason": "开放式商业街区，Mock 排队为 0。",
+      "open_reason": "营业到 22:00，傍晚体验稳定。",
+      "price_reason": "不强制消费，可控制总预算。",
+      "ugc_reason": "UGC 高频提到平坦、夜景、动线简单。",
+      "user_fit": "适合体力敏感、天气不确定或亲子用户。",
+      "rejected_reason": "若用户要强目的地或明确看展，这个点会因体验深度不足被文化 POI 替代。"
+    },
+    "risk_notes": ["露天段受天气影响", "不是强目的地，需和餐饮甜品组合", "节假日湖边人流增加"]
+  },
+  {
+    "id": "poi-009",
+    "name": "蓝港湖边奶冻甜品铺",
+    "category": "dessert",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "蓝色港湾",
+    "address": "朝阳公园路 6 号蓝色港湾湖边东侧临水铺位",
+    "latitude": 39.9449,
+    "longitude": 116.4766,
+    "rating": 4.5,
+    "review_count": 940,
+    "avg_price": 48,
+    "open_hours": "11:00-22:00",
+    "business_status": "营业中",
+    "queue_minutes": 5,
+    "visit_duration_minutes": 50,
+    "tags": ["甜品", "临水", "轻松", "亲子友好", "低预算"],
+    "platform_badges": ["蓝色港湾甜品热门榜 Top 7", "亲子甜品友好榜 Top 9"],
+    "service_options": ["团购券", "儿童餐具", "可外带", "临水座"],
+    "deal_summary": "甜品双人券 52 元。",
+    "booking_hint": "无需预约，傍晚临水位更紧张；排队长时可外带到湖边。",
+    "ugc_summary": "甜品不会太腻，傍晚灯光起来后体验更好，价格对亲子和朋友都友好。",
+    "ugc_highlights": [
+      {
+        "label": "价格",
+        "sentiment": "positive",
+        "text": "团购券很划算，小朋友也能吃。",
+        "signal": "预算友好"
+      },
+      {
+        "label": "收尾",
+        "sentiment": "positive",
+        "text": "逛完湖边坐一下刚好。",
+        "signal": "路线闭环"
+      },
+      {
+        "label": "座位",
+        "sentiment": "neutral",
+        "text": "临水座要碰运气，外带更稳。",
+        "signal": "座位风险"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "作为少走路/亲子路线收尾，价格低且移动距离短。",
+      "queue_reason": "Mock 排队 5 分钟，可接受。",
+      "open_reason": "营业到 22:00，傍晚收尾充足。",
+      "price_reason": "人均 48 元，是甜品候选中最便宜的一档。",
+      "ugc_reason": "UGC 支持价格友好、亲子可接受、适合休息。",
+      "user_fit": "适合家庭或想控制预算的轻松路线。",
+      "rejected_reason": "若用户要高仪式感或城市景观，这家会被国贸下午茶或亮马河露台甜品替代。"
+    },
+    "risk_notes": ["临水位不保证", "甜品种类比专门甜品店少", "周末亲子客流更高"]
+  },
+  {
+    "id": "poi-010",
+    "name": "工体西路人气火锅",
+    "category": "food",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "工体",
+    "address": "工体西路临街 1 层",
+    "latitude": 39.9295,
+    "longitude": 116.4478,
+    "rating": 4.8,
+    "review_count": 13280,
+    "avg_price": 196,
+    "open_hours": "11:00-02:00",
+    "business_status": "营业中",
+    "queue_minutes": 45,
+    "visit_duration_minutes": 100,
+    "tags": ["热门长队", "重口味", "朋友聚餐", "营业到晚", "噪声偏高"],
+    "platform_badges": ["北京火锅热门榜 Top 3", "工体夜饭热度榜 Top 5"],
+    "service_options": ["在线排号", "夜宵", "多人桌", "团购套餐"],
+    "deal_summary": "四人火锅套餐 688 元，晚高峰不可用。",
+    "booking_hint": "周末晚高峰常等 45 分钟以上，低排队路线不建议选。",
+    "ugc_summary": "口味和热度都高，但排队不可控、环境偏吵，不适合低排队约会路线。",
+    "ugc_highlights": [
+      {
+        "label": "排队",
+        "sentiment": "negative",
+        "text": "周末饭点排号很夸张，等位时间不好控。",
+        "signal": "命中避雷"
+      },
+      {
+        "label": "氛围",
+        "sentiment": "neutral",
+        "text": "热闹是真热闹，但聊天要提高音量。",
+        "signal": "噪声偏高"
+      },
+      {
+        "label": "营业",
+        "sentiment": "positive",
+        "text": "开到很晚，适合夜饭和夜宵。",
+        "signal": "晚间备选"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "不进入默认路线，但可作为夜饭重口味备选。",
+      "queue_reason": "Mock 排队 45 分钟，超过低排队阈值。",
+      "open_reason": "营业到凌晨，适合夜宵但不是下午路线刚需。",
+      "price_reason": "人均 196 元，接近朋友用户预算上限并高于亲子预算。",
+      "ugc_reason": "UGC 对口味认可，但排队和吵闹负面信号强。",
+      "user_fit": "更适合朋友夜饭，不适合低排队约会用户。",
+      "rejected_reason": "默认会因热门长队、噪声偏高和重口味风险被排除；只有用户主动要求热闹火锅时才升为备选。"
+    },
+    "risk_notes": ["排队不可控", "环境偏吵", "口味重", "晚高峰团购限制"]
+  },
+  {
+    "id": "poi-011",
+    "name": "国贸云端下午茶",
+    "category": "dessert",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "国贸",
+    "address": "建国门外大街高层酒店 78 层",
+    "latitude": 39.9099,
+    "longitude": 116.4619,
+    "rating": 4.7,
+    "review_count": 3400,
+    "avg_price": 298,
+    "open_hours": "14:00-17:00",
+    "business_status": "营业中",
+    "queue_minutes": 0,
+    "visit_duration_minutes": 90,
+    "tags": ["景观", "仪式感", "需预订", "高预算", "时间窗短"],
+    "platform_badges": ["北京景观下午茶热门榜 Top 4", "纪念日仪式感榜 Top 10"],
+    "service_options": ["必须预订", "靠窗位", "套餐", "酒店停车"],
+    "deal_summary": "双人下午茶 596 元，靠窗位需提前备注。",
+    "booking_hint": "周末通常需提前 1-2 天预约，临时去很难保证靠窗位。",
+    "booking_required": true,
+    "advance_booking_hours": 24,
+    "ugc_summary": "景观和仪式感强，但价格明显高，且与三里屯/亮马河动线不顺。",
+    "ugc_highlights": [
+      {
+        "label": "价格",
+        "sentiment": "negative",
+        "text": "景观值钱，但预算要放宽。",
+        "signal": "超预算"
+      },
+      {
+        "label": "预订",
+        "sentiment": "neutral",
+        "text": "临时去很难有靠窗位。",
+        "signal": "临时确定性低"
+      },
+      {
+        "label": "氛围",
+        "sentiment": "positive",
+        "text": "纪念日仪式感强，视野确实好。",
+        "signal": "高预算备选"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "不进入默认路线，原因是预算和预订确定性不匹配。",
+      "queue_reason": "排队低，但必须预订，不能只看 queue_minutes。",
+      "open_reason": "只营业到 17:00，和看展后收尾冲突。",
+      "price_reason": "人均 298 元，高于普通低排队约会的甜品预算段。",
+      "ugc_reason": "UGC 支持景观，但也提示贵和临时靠窗不稳。",
+      "user_fit": "适合高预算纪念日，不适合临时低排队约会。",
+      "rejected_reason": "默认会因高预算、时间窗短、预订不稳被排除；如果用户明确要纪念日仪式感才作为主推。"
+    },
+    "risk_notes": ["高预算", "时间窗短", "临时预订不稳", "与朝阳北部动线不顺"]
+  },
+  {
+    "id": "poi-012",
+    "name": "朝阳公园露天市集",
+    "category": "entertainment",
+    "city": "北京",
+    "district": "朝阳区",
+    "area": "朝阳公园",
+    "address": "朝阳公园南门草坪区",
+    "latitude": 39.9361,
+    "longitude": 116.4822,
+    "rating": 4.4,
+    "review_count": 2860,
+    "avg_price": 60,
+    "open_hours": "10:00-18:00",
+    "business_status": "营业中",
+    "queue_minutes": 18,
+    "visit_duration_minutes": 70,
+    "tags": ["露天", "市集", "拍照", "天气敏感", "排队中等"],
+    "platform_badges": ["周末市集热度榜 Top 6", "朝阳公园休闲榜 Top 10"],
+    "service_options": ["现场购票", "小吃摊位", "宠物友好", "公共卫生间"],
+    "deal_summary": "市集门票 30 元，摊位另付。",
+    "booking_hint": "天气好时人流高，雨天体验下降；建议把它放在晴天备选。",
+    "ugc_summary": "氛围热闹、拍照轻松，但受天气和人流影响大，不适合作为稳定 demo 主路线。",
+    "ugc_highlights": [
+      {
+        "label": "天气",
+        "sentiment": "negative",
+        "text": "下雨就很影响体验，草地也不好走。",
+        "signal": "天气风险"
+      },
+      {
+        "label": "人流",
+        "sentiment": "neutral",
+        "text": "天气好时很热闹，摊位前会排队。",
+        "signal": "排队中等"
+      },
+      {
+        "label": "氛围",
+        "sentiment": "positive",
+        "text": "晴天随便逛逛挺有周末感。",
+        "signal": "晴天备选"
+      }
+    ],
+    "decision_signals": {
+      "selected_reason": "不进入默认路线，原因是天气和人流稳定性不足。",
+      "queue_reason": "Mock 排队 18 分钟，超过低排队用户阈值。",
+      "open_reason": "18:00 结束，下午晚段余量不足。",
+      "price_reason": "价格不高，但摊位消费不确定。",
+      "ugc_reason": "UGC 对氛围认可，但天气负面明显。",
+      "user_fit": "适合晴天随性逛，不适合稳定可演示路线。",
+      "rejected_reason": "默认会因天气敏感、排队中等、闭场较早被排除；晴天且用户想逛市集时才进入备选。"
+    },
+    "risk_notes": ["天气敏感", "摊位排队", "闭场较早", "儿童推车在草坪不稳定"]
+  }
+]

@@ -1,0 +1,300 @@
+[
+  {
+    "id": "route-date-low-queue",
+    "title": "低排队约会路线",
+    "subtitle": "三里屯开场，红砖看展，亮马河甜品收尾",
+    "theme": "date-low-queue",
+    "badge": "推荐",
+    "score": 92,
+    "total_minutes": 210,
+    "highlights": ["平均排队 5.3 分钟", "餐饮 + 文化 + 甜品完整闭环", "每站都有 UGC 支撑", "营业时间可被约束检查通过"],
+    "map_points": [
+      { "x": 16, "y": 74, "label": "1" },
+      { "x": 72, "y": 16, "label": "2" },
+      { "x": 36, "y": 62, "label": "3" }
+    ],
+    "transport_summary": {
+      "provider": "mock_map_provider",
+      "recommended": "taxi_short_hops",
+      "detail": "路线只保存交通偏好；站间距离和通勤分钟数由 mock_map_provider 根据 POI 经纬度计算。"
+    },
+    "stops": [
+      {
+        "poi_id": "poi-001",
+        "poi_name": "太古里北区轻食小馆",
+        "start_time": "14:20",
+        "duration_minutes": 65,
+        "distance_from_previous": "起点",
+        "reason": "先用低排队、口味稳定的餐厅开场；UGC 证明桌距和聊天氛围适合约会。"
+      },
+      {
+        "poi_id": "poi-002",
+        "poi_name": "红砖美术馆花园展",
+        "start_time": "15:45",
+        "duration_minutes": 65,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "补足看展和拍照需求，线上购票后现场排队短；15:45 到店仍能完成主要展区。"
+      },
+      {
+        "poi_id": "poi-003",
+        "poi_name": "亮马河露台甜品",
+        "start_time": "17:20",
+        "duration_minutes": 55,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "甜品店营业到晚、排队最低，UGC 显示傍晚露台氛围更适合收尾聊天。"
+      }
+    ],
+    "constraints": [
+      {
+        "key": "queue",
+        "label": "平均排队",
+        "satisfied": true,
+        "detail": "三处 POI 平均排队 5.3 分钟，低于 10 分钟阈值。"
+      },
+      {
+        "key": "business_hours",
+        "label": "营业时间",
+        "satisfied": true,
+        "detail": "所有站点在计划到达时均营业；红砖美术馆花园展在闭馆前完成核心停留。"
+      },
+      {
+        "key": "budget",
+        "label": "人均预算",
+        "satisfied": true,
+        "detail": "餐饮 138 + 展票 80 + 甜品 76，原价总人均约 294 元，低于 320 元路线预算。"
+      },
+      {
+        "key": "avoidance",
+        "label": "避雷偏好",
+        "satisfied": true,
+        "detail": "未命中热门长队、噪声太大、重口味踩雷等避雷点。"
+      }
+    ],
+    "rank_reason": "主推方案优先满足“少排队、约会氛围、看展、甜品收尾”，预算和营业时间都可解释。",
+    "score_breakdown": {
+      "queue": 0.34,
+      "experience_fit": 0.24,
+      "map": "站间距离由 mock_map_provider 计算，不写死在样例文案里",
+      "budget": 0.1,
+      "ugc": "三站都有正向 UGC 和明确风险提示"
+    },
+    "candidate_trace": {
+      "selected_pois": ["poi-001", "poi-002", "poi-003"],
+      "rejected_pois": [
+        {
+          "poi_id": "poi-004",
+          "reason": "同样适合看展和拍照，但默认用户更重视低排队和安静，红砖美术馆花园展的 UGC 与排队信号更强。"
+        },
+        {
+          "poi_id": "poi-010",
+          "reason": "火锅评分高但 Mock 排队约 45 分钟，命中“热门长队”“噪声偏高”“重口味”三个避雷点。"
+        },
+        {
+          "poi_id": "poi-011",
+          "reason": "景观和仪式感强，但人均 298 元、需要预订且 17:00 结束，不适合临时低排队收尾。"
+        },
+        {
+          "poi_id": "poi-012",
+          "reason": "市集适合晴天随性逛，但天气和人流不稳定，18:00 闭场也压缩晚段余量。"
+        }
+      ],
+      "debug_summary": "POIRetrievalAgent 先按 food/culture/dessert 覆盖筛候选，再按排队、营业时间、预算、UGC 稳定性和地图 provider 通勤事实排序。"
+    }
+  },
+  {
+    "id": "route-photo-gallery",
+    "title": "文艺出片路线",
+    "subtitle": "798 集中看展与咖啡，晚餐回三元桥",
+    "theme": "photo-culture",
+    "badge": "好拍",
+    "score": 88,
+    "total_minutes": 235,
+    "highlights": ["拍照点集中", "展后步行休息", "晚餐可订位", "排除高预算下午茶"],
+    "map_points": [
+      { "x": 64, "y": 24, "label": "1" },
+      { "x": 67, "y": 26, "label": "2" },
+      { "x": 40, "y": 56, "label": "3" }
+    ],
+    "transport_summary": {
+      "provider": "mock_map_provider",
+      "recommended": "taxi_then_walk",
+      "detail": "798 内部步行承接，跨商圈段由 mock_map_provider 计算距离和通勤时间。"
+    },
+    "stops": [
+      {
+        "poi_id": "poi-004",
+        "poi_name": "798 小幅影像展",
+        "start_time": "14:20",
+        "duration_minutes": 90,
+        "distance_from_previous": "起点",
+        "reason": "比热门大展安静，UGC 支持光线好、适合慢慢拍。"
+      },
+      {
+        "poi_id": "poi-005",
+        "poi_name": "798 白盒子咖啡",
+        "start_time": "16:05",
+        "duration_minutes": 55,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "展后休息不用再打车，排队短，聊天环境稳定。"
+      },
+      {
+        "poi_id": "poi-006",
+        "poi_name": "霄云路云南小馆",
+        "start_time": "17:20",
+        "duration_minutes": 75,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "晚餐可订位，口味温和，适合不想踩雷的收尾。"
+      }
+    ],
+    "constraints": [
+      {
+        "key": "photo_fit",
+        "label": "出片需求",
+        "satisfied": true,
+        "detail": "影像展和咖啡馆均有稳定拍照/休息 UGC。"
+      },
+      {
+        "key": "queue",
+        "label": "平均排队",
+        "satisfied": true,
+        "detail": "三处 POI 平均排队 6.7 分钟。"
+      },
+      {
+        "key": "business_hours",
+        "label": "营业时间",
+        "satisfied": true,
+        "detail": "所有站点在计划到达时均营业；晚餐避开午晚市休息段。"
+      },
+      {
+        "key": "budget",
+        "label": "人均预算",
+        "satisfied": true,
+        "detail": "展票 58 + 咖啡 52 + 晚餐 132，原价总人均约 242 元。"
+      }
+    ],
+    "rank_reason": "当用户微调为“更想拍照”时，本方案优先选择 798 集中动线，牺牲一点主推分数换更强出片属性。",
+    "score_breakdown": {
+      "photo_fit": 0.32,
+      "queue": 0.22,
+      "distance": "798 内部站点由 provider 识别为短距离，跨区段交给 route_segments",
+      "booking": "晚餐可订位提高确定性",
+      "variant_delta": -4
+    },
+    "candidate_trace": {
+      "selected_pois": ["poi-004", "poi-005", "poi-006"],
+      "rejected_pois": [
+        {
+          "poi_id": "poi-002",
+          "reason": "红砖安静度更高，但与 798 咖啡无法步行串联；在“更想拍照且少折返”场景里降级。"
+        },
+        {
+          "poi_id": "poi-003",
+          "reason": "亮马河露台适合夜景收尾，但本方案希望把中场留在 798，避免过早跨区。"
+        },
+        {
+          "poi_id": "poi-011",
+          "reason": "仪式感强但高预算、需预订、时间窗短，不符合轻文艺拍照路线。"
+        }
+      ],
+      "debug_summary": "适合展示用户微调“更想拍照”后，Agent 如何替换文化和甜品候选，并用地图 provider 校验是否更少折返。"
+    }
+  },
+  {
+    "id": "route-walk-light",
+    "title": "少走路舒适路线",
+    "subtitle": "蓝色港湾内吃、逛、甜品连续完成",
+    "theme": "family-low-effort",
+    "badge": "省心",
+    "score": 86,
+    "total_minutes": 205,
+    "highlights": ["商场内外可切换", "亲子和低预算友好", "开放式慢逛无排队", "雨天有室内兜底"],
+    "map_points": [
+      { "x": 45, "y": 52, "label": "1" },
+      { "x": 49, "y": 50, "label": "2" },
+      { "x": 51, "y": 49, "label": "3" }
+    ],
+    "transport_summary": {
+      "provider": "mock_map_provider",
+      "recommended": "walk_in_mall",
+      "detail": "蓝色港湾内部站点的步行距离由 mock_map_provider 计算；雨天可切商场连廊。"
+    },
+    "stops": [
+      {
+        "poi_id": "poi-007",
+        "poi_name": "蓝港日料小食堂",
+        "start_time": "14:30",
+        "duration_minutes": 60,
+        "distance_from_previous": "起点",
+        "reason": "商场内、翻台稳定、有儿童椅，适合先解决吃饭。"
+      },
+      {
+        "poi_id": "poi-008",
+        "poi_name": "SOLANA 湖边慢逛区",
+        "start_time": "15:45",
+        "duration_minutes": 65,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "开放式逛街区无需排队，雨天也能切换到室内连廊。"
+      },
+      {
+        "poi_id": "poi-009",
+        "poi_name": "蓝港湖边奶冻甜品铺",
+        "start_time": "17:05",
+        "duration_minutes": 50,
+        "distance_from_previous": "由 mock_map_provider.route_segments 回填",
+        "reason": "甜品价格低、孩子也能吃，适合轻松收尾。"
+      }
+    ],
+    "constraints": [
+      {
+        "key": "distance",
+        "label": "移动距离",
+        "satisfied": true,
+        "detail": "三处 POI 都在蓝色港湾内，具体步行距离由地图 provider 输出。"
+      },
+      {
+        "key": "weather",
+        "label": "天气兜底",
+        "satisfied": true,
+        "detail": "餐饮和甜品均在商业空间内，逛街区可切回室内连廊。"
+      },
+      {
+        "key": "kid_friendly",
+        "label": "亲子友好",
+        "satisfied": true,
+        "detail": "包含儿童椅、儿童餐具、母婴室等亲子信号。"
+      },
+      {
+        "key": "budget",
+        "label": "人均预算",
+        "satisfied": true,
+        "detail": "日料 105 + 慢逛 0 + 甜品 48，低于亲子用户 160 元预算。"
+      }
+    ],
+    "rank_reason": "这不是约会主推，但在亲子、雨天、少走路场景中约束满足率最高。",
+    "score_breakdown": {
+      "kid_friendly": 0.3,
+      "weather_safe": 0.24,
+      "queue": 0.2,
+      "budget": 0.1,
+      "variant_delta": -6
+    },
+    "candidate_trace": {
+      "selected_pois": ["poi-007", "poi-008", "poi-009"],
+      "rejected_pois": [
+        {
+          "poi_id": "poi-012",
+          "reason": "同样适合逛，但露天市集天气风险高、草坪推车不稳定，不如蓝港稳定。"
+        },
+        {
+          "poi_id": "poi-010",
+          "reason": "火锅重口、排队长、噪声偏高，不适合亲子省心路线。"
+        },
+        {
+          "poi_id": "poi-002",
+          "reason": "红砖看展体验好，但闭馆早且跨区通勤更长，不符合少走路和雨天兜底。"
+        }
+      ],
+      "debug_summary": "适合展示约束从“约会”切到“亲子/少走路”时，候选池如何换到商场内 POI。"
+    }
+  }
+]

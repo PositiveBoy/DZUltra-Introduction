@@ -1,0 +1,65 @@
+[
+  {
+    "id": "user-date-001",
+    "name": "周六低排队约会用户",
+    "city": "北京",
+    "scenario": "两个人周六下午从朝阳区出发，想先吃一顿不踩雷的饭，再看展或逛一会儿，最后找一个能聊天的甜品/饮品点。",
+    "default_goal": "今天下午想在北京约会，不想排队，想吃饭加看展，最后喝点甜的",
+    "group_size": 2,
+    "time_window": "14:00-18:30",
+    "budget_per_person": 320,
+    "transport_preference": "taxi_short_hops",
+    "preferences": ["低排队", "约会氛围", "可拍照", "室内为主", "移动距离短", "可预订"],
+    "avoidances": ["热门长队", "噪声太大", "重口味踩雷", "跨区来回跑", "临时预订不稳"],
+    "priority_weights": {
+      "queue": 0.34,
+      "experience_fit": 0.24,
+      "distance": 0.18,
+      "rating": 0.14,
+      "budget": 0.1
+    },
+    "explain_focus": ["排队风险", "约会氛围", "营业时间", "UGC 稳定性", "地图 provider 通勤事实"]
+  },
+  {
+    "id": "user-family-001",
+    "name": "雨天亲子省心用户",
+    "city": "北京",
+    "scenario": "周末带 6 岁孩子出门，天气可能下雨，希望路线在室内或商场内，餐饮不要太辣，停车和厕所要方便。",
+    "default_goal": "周末带孩子在北京玩半天，最好室内，吃饭别太辣，少走路",
+    "group_size": 3,
+    "time_window": "11:30-16:30",
+    "budget_per_person": 160,
+    "transport_preference": "walk_in_mall",
+    "preferences": ["亲子友好", "室内为主", "动线简单", "有儿童餐", "可停车", "少走路"],
+    "avoidances": ["露天排队", "重辣", "酒吧氛围", "台阶多", "天气敏感"],
+    "priority_weights": {
+      "kid_friendly": 0.3,
+      "weather_safe": 0.24,
+      "queue": 0.2,
+      "distance": 0.16,
+      "budget": 0.1
+    },
+    "explain_focus": ["是否室内", "孩子是否能坐住", "排队和停车", "口味风险", "天气兜底"]
+  },
+  {
+    "id": "user-friends-001",
+    "name": "朋友临时夜饭用户",
+    "city": "北京",
+    "scenario": "四个朋友临时约晚饭，希望热闹但别太吵，人均不要太高，饭后能顺路喝咖啡或逛河边。",
+    "default_goal": "今晚朋友临时聚餐，想吃饭后顺路喝点东西，别太贵，最好能订位",
+    "group_size": 4,
+    "time_window": "18:30-22:30",
+    "budget_per_person": 180,
+    "transport_preference": "taxi_or_walk",
+    "preferences": ["朋友聚餐", "性价比", "营业到晚", "可订位", "饭后顺路", "不重口"],
+    "avoidances": ["过度正式", "只适合情侣", "闭店太早", "排队不可控", "高预算"],
+    "priority_weights": {
+      "open_late": 0.26,
+      "booking": 0.22,
+      "budget": 0.2,
+      "queue": 0.18,
+      "distance": 0.14
+    },
+    "explain_focus": ["是否能订位", "人均价格", "晚间营业", "饭后动线", "排队是否可控"]
+  }
+]

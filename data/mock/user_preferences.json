@@ -1,0 +1,120 @@
+{
+  "profiles": {
+    "user-date-001": [
+      {
+        "id": "pref-659d6de6fa",
+        "label": "低排队",
+        "category": "avoidance",
+        "source": "AI 从本轮输入检测 · trace-1b02ca4829",
+        "source_prompt": "今天下午想在北京约会，不想排队，想吃饭加看展",
+        "confidence": 0.92,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-07T15:06:18+00:00"
+      },
+      {
+        "id": "pref-eaa130ef1d",
+        "label": "约会氛围",
+        "category": "scenario",
+        "source": "AI 从本轮输入检测 · trace-1b02ca4829",
+        "source_prompt": "今天下午想在北京约会，不想排队，想吃饭加看展",
+        "confidence": 0.84,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-07T15:06:18+00:00"
+      },
+      {
+        "id": "pref-f2d515327c",
+        "label": "移动距离短",
+        "category": "mobility",
+        "source": "历史选择",
+        "source_prompt": "不想跨区来回跑",
+        "confidence": 0.78,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      },
+      {
+        "id": "pref-ca41c603d0",
+        "label": "可拍照",
+        "category": "experience",
+        "source": "AI 从本轮输入检测 · trace-d7b0080f37",
+        "source_prompt": "周末想找一条轻松拍照路线，最好少走路",
+        "confidence": 0.82,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T17:54:58+00:00"
+      },
+      {
+        "id": "pref-2c574c4334",
+        "label": "少走路",
+        "category": "mobility",
+        "source": "AI 从本轮输入检测 · trace-d7b0080f37",
+        "source_prompt": "周末想找一条轻松拍照路线，最好少走路",
+        "confidence": 0.9,
+        "created_at": "2026-06-06T17:54:58+00:00",
+        "updated_at": "2026-06-06T17:54:58+00:00"
+      }
+    ],
+    "user-family-001": [
+      {
+        "id": "pref-family-weather-safe",
+        "label": "室内为主",
+        "category": "experience",
+        "source": "默认 mock 用户画像",
+        "source_prompt": "最好室内",
+        "confidence": 0.9,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      },
+      {
+        "id": "pref-family-kid-friendly",
+        "label": "亲子友好",
+        "category": "scenario",
+        "source": "默认 mock 用户画像",
+        "source_prompt": "带孩子在北京玩半天",
+        "confidence": 0.88,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      },
+      {
+        "id": "pref-family-low-walk",
+        "label": "少走路",
+        "category": "mobility",
+        "source": "本轮补全答案",
+        "source_prompt": "少走路",
+        "confidence": 0.82,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      }
+    ],
+    "user-friends-001": [
+      {
+        "id": "pref-friends-booking",
+        "label": "可订位",
+        "category": "experience",
+        "source": "默认 mock 用户画像",
+        "source_prompt": "最好能订位",
+        "confidence": 0.86,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      },
+      {
+        "id": "pref-friends-value",
+        "label": "性价比",
+        "category": "budget",
+        "source": "历史选择",
+        "source_prompt": "别太贵",
+        "confidence": 0.8,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      },
+      {
+        "id": "pref-friends-open-late",
+        "label": "营业到晚",
+        "category": "experience",
+        "source": "本轮对话",
+        "source_prompt": "今晚朋友临时聚餐",
+        "confidence": 0.77,
+        "created_at": "2026-06-06T00:00:00+08:00",
+        "updated_at": "2026-06-06T00:00:00+08:00"
+      }
+    ]
+  }
+}

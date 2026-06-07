@@ -1,0 +1,19 @@
+{
+  "name": "dzultra",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DZUltra monorepo for the Dianping local route planning AI hackathon demo.",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "lint:web": "npm --workspace apps/web run lint",
+    "dev:api": "cd apps/api && uvicorn app.main:app --reload --port 8000",
+    "test:api": "cd apps/api && pytest"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
