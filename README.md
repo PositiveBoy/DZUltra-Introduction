@@ -1,8 +1,14 @@
 # 点仔 Ultra
 
-> 把“附近有什么好吃好玩”，变成一条可以直接出发的路线。
+> 把"附近有什么好吃好玩"，变成一条可以直接出发的路线。
 
-点仔 Ultra 是面向大众点评“点仔”的 AI 本地路线智能规划 Demo。它接住用户的一句话需求，理解场景、补齐约束、检索候选 POI，再结合地图距离、天气、排队、UGC 摘要和个人偏好，生成 3 个可解释、可微调、可直接执行的本地路线方案。
+**美团 2026 AI Hackathon 大赛 · 赛道 5：现在就出发 — AI 本地路线智能规划**
+
+**团队：核心本地商业 | 作者：周鸿铭、王涵琪**
+
+---
+
+点仔 Ultra 是面向大众点评"点仔"的 AI 本地路线智能规划 Demo。它接住用户的一句话需求，理解场景、补齐约束、检索候选 POI，再结合地图距离、天气、排队、UGC 摘要和个人偏好，生成 3 个可解释、可微调、可直接执行的本地路线方案。
 
 它不是一个只会聊天的助手。它要把“想去哪”推进到“怎么走、为什么这样走、哪里可能踩雷”。
 
@@ -53,13 +59,6 @@ Web 端首次进入不预置静态路线、不预置 Debug Trace、不预置 Moc
 ## 截图
 
 > 最终截图将在 Demo 部署后补充。
-
-建议截图文件：
-
-- `docs/showcase/screenshots/01-clean-entry.png`：首次进入，左侧大众点评移动端首页，右侧 Debug Trace 空态。
-- `docs/showcase/screenshots/02-agent-running.png`：用户提交需求后，左侧显示 Agent 执行中，右侧高亮当前步骤。
-- `docs/showcase/screenshots/03-route-result.png`：生成 3 个路线方案，展示推荐理由、路线地图和 POI 卡片。
-- `docs/showcase/screenshots/04-debug-trace.png`：右侧 Debug Trace 展示 provider 调用、候选池、排序依据和 fallback 证据。
 
 ## 系统结构
 
@@ -113,15 +112,6 @@ conda run -n agent npm run lint:web
 conda run -n agent npm run build:web
 conda run -n agent npm run test:api
 ```
-
-## 文档入口
-
-- [V3 总规划](docs/internal/TECH_AND_INTERACTION_PLAN.md)
-- [前端规范](docs/internal/FRONTEND_SPEC.md)
-- [后端规范](docs/internal/BACKEND_SPEC.md)
-- [Agent 策略](docs/internal/AGENT_STRATEGY.md)
-- [Provider 接入选择](docs/internal/PROVIDER_SELECTION.md)
-- [本地环境配置](docs/internal/SETUP.md)
 
 ## 当前边界
 
