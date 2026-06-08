@@ -1,120 +1,141 @@
 # 点仔 Ultra
 
-> 把"附近有什么好吃好玩"，变成一条可以直接出发的路线。
+<p align="center">
+  <strong>把"附近有什么好吃好玩"，变成一条可以直接出发的路线。</strong>
+</p>
 
-**美团 2026 AI Hackathon 大赛 · 赛道 5：现在就出发 — AI 本地路线智能规划**
+<p align="center">
+  美团 2026 AI Hackathon · 赛道 5：现在就出发 — AI 本地路线智能规划<br>
+  周鸿铭 · 王涵琪
+</p>
 
-** 作者：周鸿铭、王涵琪**
+---
 
-***
+点仔 Ultra 是面向大众点评的 AI 本地路线智能规划系统。用户只需一句话，系统便会理解场景、补齐约束、检索候选 POI，结合实时地图距离、天气、排队热度与个人偏好，生成 **3 个可解释、可比较、可微调的本地路线方案**。
 
-点仔 Ultra 是面向大众点评"点仔"的 AI 本地路线智能规划 Demo。它接住用户的一句话需求，理解场景、补齐约束、检索候选 POI，再结合地图距离、天气、排队、UGC 摘要和个人偏好，生成 3 个可解释、可微调、可直接执行的本地路线方案。
+不是搜索结果列表，不是泛泛而谈的攻略——而是从"想去哪"到"怎么走、为什么这样走、哪里可能踩雷"的完整行动方案。
 
-它不是一个只会聊天的助手。它要把“想去哪”推进到“怎么走、为什么这样走、哪里可能踩雷”。
+## Live Demo
 
-## Demo
+**<https://dz-ultra-web.vercel.app>**
 
-- Live Demo：<https://dz-ultra-web.vercel.app>
-- 面向场景：大众点评本地生活、约会/亲子/朋友出游、临时决策、路线微调
+面向场景：大众点评本地生活 · 约会/亲子/朋友出游 · 临时决策 · 路线微调
 
-## 一句话
+## 产品展示
 
-用户说目标，点仔 Ultra 给路线。
-
-不是搜索结果列表。
-
-不是泛泛而谈的攻略。
-
-而是一组能解释、能比较、能继续改的行动方案。
+<table>
+  <tr>
+    <td align="center"><b>首页 · 大众点评沉浸式体验</b></td>
+    <td align="center"><b>AI 首屏 · 一句话发起规划</b></td>
+  </tr>
+  <tr>
+    <td><img src="首页演示图.png" width="400" /></td>
+    <td><img src="用户端AI首屏.png" width="400" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>搜索屏 · 自然语言输入</b></td>
+    <td align="center"><b>搜索屏 · AI 意图识别</b></td>
+  </tr>
+  <tr>
+    <td><img src="用户端搜索屏示例.png" width="400" /></td>
+    <td><img src="用户端搜索屏AI示例.png" width="400" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>方案卡片 · 推荐理由一目了然</b></td>
+    <td align="center"><b>全屏方案 · 路线节奏与替换建议</b></td>
+  </tr>
+  <tr>
+    <td><img src="卡片方案示例.png" width="400" /></td>
+    <td><img src="全屏方案示例.png" width="400" /></td>
+  </tr>
+</table>
 
 ## 核心能力
 
-**一句话生成路线**
+### 一句话生成路线
 
-用户不用先填表。系统会自动判断这是路线规划、方案微调、补全回答，还是普通 POI 问答。缺少关键信息时最多追问 2 轮，避免把轻量需求做成重表单。
+用户无需填表。系统自动判断意图类型——路线规划、方案微调、信息补全还是 POI 问答。缺少关键信息时最多追问 2 轮，轻量需求不会变成重表单。
 
-**真实 provider 优先**
+### 真实服务优先
 
-V3 主链路优先使用 LongCat LLM、高德地图 Web 服务 API、彩云天气 API。真实接口超时、失败、返回结构不合法或缺少 Key 时，系统才回退到 Mock 数据，也就是本地样例数据。
+主链路优先调用 LongCat LLM、高德地图 Web 服务 API、彩云天气 API，确保推荐结果基于真实数据。当外部服务不可用时，系统自动降级至本地样例数据，并在 Debug Trace 中完整记录降级原因与影响范围——每一次降级都可追溯、可审计。
 
-**Mock fallback 可解释**
+### Agent 全链路可回放
 
-回退不是偷偷发生的。Debug Trace 会写明触发原因、使用了哪些 Mock 数据、哪些字段可靠性是 `mocked`。
+系统将一次推荐拆解为 12 个可追踪步骤：意图识别 → 上下文收集 → 结构化追问 → 偏好分析 → 候选检索 → 地图距离计算 → 天气约束 → 排程优化 → 约束检查 → 方案生成 → 排序 → 微调。Debug Trace 面板实时展示每一步的输入、输出、耗时与服务状态，让推荐结果有据可查。
 
-**Agent 全链路可回放**
+### 首屏即真实
 
-这里的 Agent 可以理解为负责某个子任务的小助手。点仔 Ultra 把一次推荐拆成：识别意图、收集上下文、结构化追问、偏好分析、检索候选、地图距离、天气约束、排程、约束检查、生成方案、排序、微调。
+首次进入不预置任何静态路线或预设数据。只有用户真正提交需求后，系统才实时生成当前结果——所见即所得，没有任何提前编排的演示痕迹。
 
-右侧 Debug Trace 面板会展示每一步的输入、输出、耗时、provider 状态和 fallback 原因，让推荐结果有据可查。
+### 可解释，可微调
 
-**首屏干净**
+默认返回 3 个方案，每个方案附带推荐理由、路线节奏、适合人群、风险提示和可替换点位。用户可以继续说"太贵了""换一个不用排队的""我想多拍照"，系统基于当前方案做局部微调，而非从头重来。
 
-Web 端首次进入不预置静态路线、不预置 Debug Trace、不预置 Mock 数据面板。只有用户真正提交需求后，当前 run 才出现。评委看到的是系统当下的处理过程，而不是提前写好的假日志。
-
-**可解释，也可继续改**
-
-默认返回 3 个方案，并给出推荐理由、路线节奏、适合人群、风险提示和可替换点位。用户可以继续说“太贵了”“换一个不用排队的”“我想多拍照”，系统会基于当前方案做局部微调。
-
-## 截图
-
-> 最终截图将在 Demo 部署后补充。
-
-## 系统结构
+## 系统架构
 
 ```mermaid
 flowchart LR
-  U["用户自然语言需求"] --> W["Next.js 用户端"]
+  U["用户自然语言"] --> W["Next.js 前端"]
   W --> A["FastAPI Agent Runner"]
-  A --> I["意图识别与结构化追问"]
-  A --> P["偏好与上下文分析"]
-  A --> R["候选 POI 检索与排序"]
-  A --> M["高德地图 / Mock 地图"]
-  A --> T["彩云天气 / Mock 天气"]
-  A --> L["LongCat LLM / 模板 fallback"]
-  A --> O["3 个可解释路线方案"]
-  A --> D["Debug Trace 回放"]
+  A --> I["意图识别"]
+  A --> P["偏好分析"]
+  A --> R["候选 POI 检索"]
+  A --> M["高德地图 API"]
+  A --> T["彩云天气 API"]
+  A --> L["LongCat LLM"]
+  A --> O["3 个可解释方案"]
+  A --> D["Debug Trace"]
   O --> W
   D --> W
 ```
 
 ## 技术栈
 
-- 前端：Next.js App Router、TypeScript、Tailwind CSS、Motion for React、Swiper、Zustand、TanStack Query
-- 后端：FastAPI、Python、Pydantic、provider adapter、可复现 deterministic fallback
-- Provider：LongCat LLM、高德地图 Web 服务 API、彩云天气 API
-- 本地数据：Mock User、Mock POI、UGC 摘要、排队预测、推荐菜、历史偏好
-- 可解释性：Agent Trace、provider 状态、候选池、排除理由、排序依据、fallback 证据
+| 层级 | 技术 |
+|------|------|
+| 前端 | Next.js App Router · TypeScript · Tailwind CSS · Motion · Swiper · Zustand · TanStack Query |
+| 后端 | FastAPI · Python · Pydantic · Provider Adapter · Deterministic Fallback |
+| AI / LLM | LongCat LLM |
+| 地图 | 高德地图 Web 服务 API |
+| 天气 | 彩云天气 API |
+| 可解释性 | Agent Trace · 服务状态 · 候选池 · 排除理由 · 排序依据 · 降级证据 |
 
 ## 本地运行
 
-建议使用项目约定的 conda 环境：
-
 ```bash
-conda run -n agent npm install
-conda run -n agent npm run dev:api
-conda run -n agent npm run dev:web
+# 安装依赖
+npm install
+
+# 启动后端
+npm run dev:api
+
+# 启动前端
+npm run dev:web
 ```
 
-如果要接真实 provider，请复制示例环境变量文件并填入自己的 Key：
+如需接入真实地图与天气服务，请配置环境变量：
 
 ```bash
-cp apps/api/.env.example .env
+cp apps/api/.env.example apps/api/.env
 cp apps/web/.env.local.example apps/web/.env.local
 ```
 
-`.env` 和 `.env.local` 已被 `.gitignore` 忽略，不应提交到公开仓库。
+## 项目结构
 
-## 验证
-
-```bash
-conda run -n agent npm run lint:web
-conda run -n agent npm run build:web
-conda run -n agent npm run test:api
 ```
-
-## 当前边界
-
-- 地图、天气、LLM 已按真实 provider 优先设计；缺少 Key 或接口失败时会走 Mock fallback。
-- 排队、UGC 摘要、推荐菜、用户历史行为等大众点评深度字段仍使用本地 Mock 或平台内 Mock 生成器。
-- 公开仓库用于展示项目能力和代码设计；最终线上 Demo 链接会在部署完成后补充。
-
+├── apps/
+│   ├── api/                  # FastAPI 后端
+│   │   ├── app/agents/       # Agent 策略与执行引擎
+│   │   ├── app/llm/          # LLM 服务接入
+│   │   ├── app/maps/         # 高德地图服务接入
+│   │   ├── app/weather/      # 彩云天气服务接入
+│   │   ├── app/providers/    # 服务适配与降级策略
+│   │   ├── app/models/       # 数据模型与 Schema
+│   │   └── app/routers/      # API 路由
+│   └── web/                  # Next.js 前端
+│       ├── components/       # UI 组件
+│       ├── stores/           # 状态管理
+│       └── types/            # 类型定义
+└── data/                     # 本地样例数据
+```
