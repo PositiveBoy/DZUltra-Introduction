@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Lightbulb, Link2, Bot, BarChart3, CloudSun, Brain, FileText } from "lucide-react";
-import { AgentFlowChart } from "./agent-flow-chart";
 import { useDemoStore } from "@/stores/use-demo-store";
 
-const authors = ["Mark Zhou", "Codex"];
+const authors = ["周鸿铭", "王涵琪"];
+const eventLine = "美团 2026 AI Hackthon 大赛 赛题5「现在就出发：AI本地路线智能规划」";
 
 const coreHighlights = [
   { icon: Link2, title: "约束账本", desc: "所有推荐围绕约束发现→落地→校验→解释，每条约束可追溯来源和可信度" },
@@ -59,7 +59,8 @@ export function ProjectIntroBar() {
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold text-dz-orange">DZUltra</span>
             <span className="text-sm font-black text-dz-ink">点仔 Ultra</span>
-            <span className="text-xs text-neutral-500">作者：{authors.join(" / ")}</span>
+            <span className="text-xs text-neutral-500">作者：{authors.join("、")}</span>
+            <span className="text-xs font-medium bg-gradient-to-r from-[#56A4F0] via-[#7555DE] via-[#9577E2] to-[#EA80D2] bg-clip-text text-transparent">{eventLine}</span>
           </div>
           <p className="mt-1 text-xs leading-5 text-neutral-500">
             面向大众点评点仔的 AI 本地路线智能规划：真实 Provider 调用、可解释推荐、右侧 Debug Trace 回放。
@@ -79,16 +80,15 @@ export function ProjectIntroBar() {
 
   return (
     <div className="border-b border-dz-line bg-white/80 backdrop-blur-sm">
-      <div className="flex items-start justify-between gap-6 px-6 pt-5">
-        {/* 左半区 */}
-        <div className="flex-1 min-w-0">
+      <div className="px-6 pt-5">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
             <p className="text-sm font-semibold text-dz-orange">DZUltra</p>
-            <span className="rounded-full bg-dz-soft px-2 py-0.5 text-xs font-bold text-dz-orange">上线版本工作台</span>
-            <span className="text-xs font-medium text-neutral-500">作者：{authors.join(" / ")}</span>
+            <span className="text-xs font-medium text-neutral-500">作者：{authors.join("、")}</span>
+            <span className="text-xs font-medium bg-gradient-to-r from-[#56A4F0] via-[#7555DE] via-[#9577E2] to-[#EA80D2] bg-clip-text text-transparent">{eventLine}</span>
           </div>
           <h1 className="mt-1.5 text-2xl font-black tracking-tight">
-            点仔 Ultra — 用 AI 把多个目的地串成「直接用、不踩雷」的个性化路线
+            点仔 Ultra —— 懂约束、会追问的路线助手｜大众点评 AI 本地路线规划焕新升级方案
           </h1>
           <p className="mt-2 text-sm leading-6 text-neutral-500">
             用户出行多 POI 串联决策成本高 → 7 Agent 协作自动生成多维度最优路线
@@ -142,11 +142,6 @@ export function ProjectIntroBar() {
               ))}
             </div>
           )}
-        </div>
-
-        {/* 右半区：动态 Agent 流程图 */}
-        <div className="w-[380px] shrink-0">
-          <AgentFlowChart />
         </div>
       </div>
 
