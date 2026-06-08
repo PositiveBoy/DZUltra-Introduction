@@ -6,6 +6,26 @@
   color-scheme: light;
   background: #f7f4ed;
   color: #171717;
+
+  /* ── Blur 体系变量 ── */
+  /* 场景1：启动页淡出 */
+  --dz-blur-exit-radius: 10px;
+  --dz-blur-exit-duration: 350ms;
+  /* 场景2：编辑态背景模糊 */
+  --dz-blur-edit-radius: 12px;
+  --dz-blur-edit-overlay: rgba(255, 255, 255, 0.48);
+  /* 场景3：边缘渐隐 mask */
+  --dz-mask-fade-top: 18px;
+  --dz-mask-fade-bottom: 28px;
+  /* 边缘玻璃遮罩高度 */
+  --dz-edge-glass-top: 172px;
+  --dz-edge-glass-bottom: 164px;
+  /* 场景4：胶囊毛玻璃（预留） */
+  --dz-blur-capsule-radius: 20px;
+  --dz-blur-capsule-bg: rgba(255, 255, 255, 0.62);
+  /* 场景5：胶囊展开面板模糊（预留） */
+  --dz-blur-panel-radius: 16px;
+  --dz-blur-panel-overlay: rgba(255, 255, 255, 0.52);
 }
 
 * {
@@ -31,4 +51,39 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+/* ── ProjectIntroBar 动画 keyframes ── */
+@keyframes dz-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+@keyframes dz-pulse-ring {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes dz-dash-flow {
+  0% { stroke-dashoffset: 60; }
+  100% { stroke-dashoffset: 0; }
+}
+@keyframes dz-dot-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+@keyframes dz-modal-in {
+  0% { opacity: 0; transform: scale(0.95) translateY(10px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ── Agent Flow 块 running 状态脉冲动画 ── */
+@keyframes dz-agent-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+}
+
+/* ── prefers-reduced-motion：所有 blur 过渡改为即时切换 ── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dz-blur-exit-duration: 0ms;
+  }
 }

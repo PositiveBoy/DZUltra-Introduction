@@ -1,5 +1,6 @@
 import json
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter
 
@@ -29,6 +30,32 @@ def list_mock_pois() -> list[MockPoi]:
 
 @router.post("/generate-user", response_model=GeneratedMockResponse)
 def generate_mock_user(request: GenerateUserRequest) -> GeneratedMockResponse:
+    # new 用户：返回空白画像，不调用 LLM
+    if request.user_type == "new":
+        new_user = MockUser(
+            id=f"new-user-{uuid4().hex[:8]}",
+            name="新用户",
+            user_type="new",
+            city=request.city,
+            scenario=request.scenario,
+            preferences=[],
+            avoidances=[],
+            priority_weights={},
+            explain_focus=[],
+        )
+        return GeneratedMockResponse(
+            fallback_used=False,
+            source="deterministic_template",
+            users=[new_user],
+            metadata={
+                "city": request.city,
+                "scenario": request.scenario,
+                "user_type": "new",
+                "note": "新用户：空白画像，无偏好和历史行为数据。",
+            },
+        )
+
+    # regular 用户：走 LLM 或模板 fallback
     template_user = _template_user(request)
     llm_result = provider_adapter.llm_chat_completion(
         [
@@ -51,6 +78,7 @@ def generate_mock_user(request: GenerateUserRequest) -> GeneratedMockResponse:
                                 {
                                     "id": "string",
                                     "name": "string",
+                                    "user_type": "regular",
                                     "city": "string",
                                     "scenario": "string",
                                     "preferences": ["string"],
@@ -193,8 +221,9 @@ def generate_mock_pois(request: GeneratePoisRequest) -> GeneratedMockResponse:
 
 def _template_user(request: GenerateUserRequest) -> MockUser:
     return MockUser(
-        id="generated-user-template",
+        id=f"regular-user-{uuid4().hex[:8]}",
         name=f"{request.city}演示用户",
+        user_type="regular",
         city=request.city,
         scenario=request.scenario,
         preferences=["低排队", "路线顺路", "推荐理由清楚"],

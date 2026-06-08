@@ -1,5 +1,12 @@
 import type {
+  ChatRequestPayload,
+  ChatResponsePayload,
   DemoRoutePlan,
+  GeneratedMockResponse,
+  GenerateMockPoisRequest,
+  GenerateMockUserRequest,
+  InteractionRequestPayload,
+  InteractionResponsePayload,
   MockPoi,
   MockUser,
   RoutePlan,
@@ -15,22 +22,6 @@ import type {
 } from "@/types/dzultra";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_DZULTRA_API_BASE_URL ?? "http://localhost:8000";
-const AGENT_TIMEOUT_MS = positiveIntegerFromEnv(process.env.NEXT_PUBLIC_DZULTRA_AGENT_TIMEOUT_MS, 10000);
-
-export class DzUltraApiError extends Error {
-  constructor(
-    message: string,
-    public readonly reason: "timeout" | "http_error" | "invalid_response" | "network_error",
-    public readonly detail?: string
-  ) {
-    super(message);
-    this.name = "DzUltraApiError";
-  }
-}
-
-export function apiErrorReason(error: unknown) {
-  return error instanceof DzUltraApiError ? error.reason : "network_error";
-}
 
 export const mockUsers: MockUser[] = [
   {
@@ -137,6 +128,7 @@ export const demoRoutePlans: DemoRoutePlan[] = [
     id: "route-date-low-queue",
     title: "低排队约会路线",
     subtitle: "吃饭 + 看展 + 甜品，节奏松弛",
+    description: "综合考量大众点评榜单排名、用户评价口碑、餐厅环境特色及食材品质，为您精选了望京地区口碑最好的几家日料店，其中“酒鬼金横丁”和“鸟千禧”在口味和环境上均位居榜首。",
     theme: "约会低排队",
     badge: "可直接出发",
     score: 92,
@@ -168,12 +160,27 @@ export const demoRoutePlans: DemoRoutePlan[] = [
         durationMinutes: 65,
         distanceFromPrevious: "起点附近",
         ugcSummary: "UGC 里常提到环境安静、上菜稳定，适合作为下午路线开场。",
+        tasteSummary: "位居望京日式料理口味榜第1名，以食材新鲜、口味地道著称，深受食客好评。",
+        envSummary: "位于望京小街下沉广场，日式居酒屋风格浓郁，包间私密性好，服务员还会主动提供清口糖果。",
+        images: [
+          "/mock-reference-assets/todo-reference-bistro-deal.png",
+          "/mock-reference-assets/todo-reference-japanese-queue.png",
+          "/mock-reference-assets/todo-reference-dessert-deal.png"
+        ],
         reason: "低排队且适合作为约会开场，口味风险较低。",
         actions: [
           { id: "nav-001", label: "导航", kind: "navigate" },
           { id: "book-001", label: "预订", kind: "book" },
           { id: "deal-001", label: "双人套餐 ¥198", kind: "deal" }
-        ]
+        ],
+        transportOptions: [
+          { mode: "bike", label: "骑行", minutes: 15, cost: "", detail: "" },
+          { mode: "metro", label: "地铁", minutes: 25, cost: "", detail: "" },
+          { mode: "walk", label: "步行", minutes: 35, cost: "", detail: "" }
+        ],
+        platformBadge: "望京日式料理口味榜第1名",
+        reviewCount: 2300,
+        positiveRate: "近30天好评率99%"
       },
       {
         poiId: "poi-002",
@@ -189,11 +196,26 @@ export const demoRoutePlans: DemoRoutePlan[] = [
         durationMinutes: 80,
         distanceFromPrevious: "打车约 18 分钟",
         ugcSummary: "近期评价集中在展陈清楚、空间好拍，下午人流比周末上午更平稳。",
+        tasteSummary: "展陈设计清晰，空间光线柔和，拍照出片率高，是近期社交媒体上的热门打卡地。",
+        envSummary: "展厅挑高开阔，动线设计合理，休息区配备充足，观展体验舒适不拥挤。",
+        images: [
+          "/mock-reference-assets/todo-reference-art-ticket.png",
+          "/mock-reference-assets/todo-reference-lakeside-walk.png",
+          "/mock-reference-assets/todo-reference-coffee-deal.png"
+        ],
         reason: "文化体验明确，拍照和安静标签稳定。",
         actions: [
           { id: "nav-002", label: "导航", kind: "navigate" },
           { id: "ticket-002", label: "购票 ¥68", kind: "ticket" }
-        ]
+        ],
+        transportOptions: [
+          { mode: "taxi", label: "打车", minutes: 18, cost: "", detail: "" },
+          { mode: "metro", label: "地铁", minutes: 32, cost: "", detail: "" },
+          { mode: "walk", label: "步行", minutes: 45, cost: "", detail: "" }
+        ],
+        platformBadge: "朝阳区文化艺术空间热门榜第3名",
+        reviewCount: 856,
+        positiveRate: "近30天好评率96%"
       },
       {
         poiId: "poi-003",
@@ -209,12 +231,27 @@ export const demoRoutePlans: DemoRoutePlan[] = [
         durationMinutes: 55,
         distanceFromPrevious: "打车约 12 分钟",
         ugcSummary: "傍晚视野更好，甜品出品稳定，适合收尾聊天。",
+        tasteSummary: "招牌提拉米苏和抹茶千层口碑最佳，甜度适中不腻，用料扎实。",
+        envSummary: "二层露台直面亮马河，傍晚灯光柔和，微风拂面，是约会收尾的理想场所。",
+        images: [
+          "/mock-reference-assets/todo-reference-dessert-deal.png",
+          "/mock-reference-assets/todo-reference-coffee-deal.png",
+          "/mock-reference-assets/todo-reference-bistro-deal.png"
+        ],
         reason: "收尾轻松，排队短，适合边休息边复盘路线。",
         actions: [
           { id: "nav-003", label: "导航", kind: "navigate" },
           { id: "queue-003", label: "在线排号", kind: "queue", disabled: true },
           { id: "deal-003", label: "甜品券 ¥39", kind: "deal" }
-        ]
+        ],
+        transportOptions: [
+          { mode: "taxi", label: "打车", minutes: 12, cost: "", detail: "" },
+          { mode: "bike", label: "骑行", minutes: 20, cost: "", detail: "" },
+          { mode: "walk", label: "步行", minutes: 38, cost: "", detail: "" }
+        ],
+        platformBadge: "亮马桥甜品环境榜第2名",
+        reviewCount: 1543,
+        positiveRate: "近30天好评率98%"
       }
     ],
     todoItems: [
@@ -836,49 +873,17 @@ function mockTraceBilling(modelName: string, inputTokens: number, outputTokens: 
   };
 }
 
-export function createLocalFallbackTrace(
-  userGoal: string,
-  selectedPlanId = demoRoutePlans[0].id,
-  fallbackReason = "api_unavailable",
-  errorDetail?: string
-): AgentTrace {
-  const traceId = `trace-local-fallback-${selectedPlanId}-${Date.now()}`;
-  const fallbackEvent: TraceEvent = {
-    id: `${traceId}-event-000`,
-    type: "run_started",
-    label: "真实链路触发 fallback",
-    durationMs: 0,
-    summary: fallbackReason === "timeout"
-      ? "前端等待真实接口超过超时预算，切换到本地 Mock fallback，保证演示继续可走。"
-      : "真实接口报错或返回结构不合法，切换到本地 Mock fallback，保证演示继续可走。",
-    input: { user_goal: userGoal, timeout_ms: AGENT_TIMEOUT_MS },
-    output: {
-      fallback_used: true,
-      fallback_reason: fallbackReason,
-      error_detail: errorDetail,
-      mock_sources: ["demoRoutePlans", "traceEvents", "mockUsers", "mockPois"]
-    },
-    fallback_used: true,
-    metadata: {
-      frontend_fallback_reason: fallbackReason,
-      error_detail: errorDetail,
-      timeout_ms: AGENT_TIMEOUT_MS
-    }
-  };
-
+export function createLocalFallbackTrace(userGoal: string, selectedPlanId = demoRoutePlans[0].id): AgentTrace {
   return {
-    id: traceId,
+    id: `trace-local-fallback-${selectedPlanId}`,
     user_goal: userGoal,
     status: "completed",
     total_duration_ms: traceEvents.reduce((sum, event) => sum + (event.durationMs ?? event.duration_ms ?? 0), 0),
     route_score: demoRoutePlans.find((plan) => plan.id === selectedPlanId)?.score ?? demoRoutePlans[0].score,
     runner_mode: "deterministic_mock",
-    events: [fallbackEvent, ...traceEvents],
+    events: traceEvents,
     metadata: {
-      fallback_reason: fallbackReason,
-      frontend_fallback_reason: fallbackReason,
-      error_detail: errorDetail,
-      timeout_ms: AGENT_TIMEOUT_MS,
+      fallback_reason: "api_unavailable",
       selected_plan_id: selectedPlanId,
       plan_count: demoRoutePlans.length,
       map_provider: "mock_map_provider",
@@ -965,6 +970,8 @@ export function createLocalChatTrace(question: string): AgentTrace {
     events,
     metadata: {
       interaction_type: "chat_answer",
+      fallback_reason: "api_unavailable",
+      fallback_provider: "local_chat_mock",
       response_shape: ["answer", "related_pois", "trace"]
     }
   };
@@ -1035,7 +1042,7 @@ function slugForTraceId(value: string) {
 }
 
 export async function planRoute(payload: RoutePlanRequestPayload): Promise<RoutePlanResponsePayload> {
-  const response = await fetchWithAgentTimeout(`${API_BASE_URL}/routes/plan`, {
+  const response = await fetch(`${API_BASE_URL}/routes/plan`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -1057,16 +1064,14 @@ export async function planRoute(payload: RoutePlanRequestPayload): Promise<Route
   });
 
   if (!response.ok) {
-    throw new DzUltraApiError("路线规划接口暂时不可用", "http_error", `${response.status} ${response.statusText}`);
+    throw new Error("路线规划接口暂时不可用");
   }
 
-  const result = await response.json();
-  assertRoutePlanResponse(result);
-  return result;
+  return response.json();
 }
 
 export async function refineRoute(payload: RouteRefineRequestPayload): Promise<RoutePlanResponsePayload> {
-  const response = await fetchWithAgentTimeout(`${API_BASE_URL}/routes/refine`, {
+  const response = await fetch(`${API_BASE_URL}/routes/refine`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -1079,12 +1084,59 @@ export async function refineRoute(payload: RouteRefineRequestPayload): Promise<R
   });
 
   if (!response.ok) {
-    throw new DzUltraApiError("路线微调接口暂时不可用", "http_error", `${response.status} ${response.statusText}`);
+    throw new Error("路线微调接口暂时不可用");
   }
 
-  const result = await response.json();
-  assertRoutePlanResponse(result);
-  return result;
+  return response.json();
+}
+
+export async function chatRespond(payload: ChatRequestPayload): Promise<ChatResponsePayload> {
+  const response = await fetch(`${API_BASE_URL}/chat/respond`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      user_id: payload.user_id ?? "anonymous",
+      message: payload.message,
+      city: payload.city ?? "北京",
+      plan_mode: payload.plan_mode ?? false,
+      interaction_context: payload.interaction_context,
+      constraints: payload.constraints ?? [],
+      related_poi_limit: payload.related_poi_limit ?? 3
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("普通问答接口暂时不可用");
+  }
+
+  return response.json();
+}
+
+export async function interactRespond(payload: InteractionRequestPayload): Promise<InteractionResponsePayload> {
+  const response = await fetch(`${API_BASE_URL}/interactions/respond`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      user_id: payload.user_id ?? "anonymous",
+      message: payload.message,
+      city: payload.city ?? "北京",
+      plan_mode: payload.plan_mode ?? true,
+      interaction_context: payload.interaction_context,
+      constraints: payload.constraints ?? [],
+      clarification_answers: payload.clarification_answers ?? {},
+      preference_detection_enabled: payload.preference_detection_enabled ?? true
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("统一交互接口暂时不可用");
+  }
+
+  return response.json();
 }
 
 export async function listTraces(): Promise<TraceSummary[]> {
@@ -1169,36 +1221,215 @@ export async function deleteUserPreferenceOnApi(userId: string, preferenceId: st
   return response.json();
 }
 
-async function fetchWithAgentTimeout(input: RequestInfo | URL, init: RequestInit) {
+// ===== AI Mock 生成器：演示者/评审通过 MockDataAgent 生成 Mock User / POI =====
+
+export async function listMockUsers(): Promise<MockUser[]> {
+  const response = await fetch(`${API_BASE_URL}/mock/users`);
+  if (!response.ok) {
+    throw new Error("Mock 用户列表接口暂时不可用");
+  }
+  return response.json();
+}
+
+export async function listMockPois(): Promise<MockPoi[]> {
+  const response = await fetch(`${API_BASE_URL}/mock/pois`);
+  if (!response.ok) {
+    throw new Error("Mock POI 列表接口暂时不可用");
+  }
+  return response.json();
+}
+
+export async function generateMockUser(payload: GenerateMockUserRequest): Promise<GeneratedMockResponse> {
+  const response = await fetch(`${API_BASE_URL}/mock/generate-user`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      user_type: payload.user_type ?? "regular",
+      city: payload.city ?? "北京",
+      scenario: payload.scenario ?? "周六下午本地约会路线"
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("Mock 用户生成接口暂时不可用");
+  }
+
+  return normalizeGeneratedMockResponse(await response.json());
+}
+
+export async function generateMockPois(payload: GenerateMockPoisRequest): Promise<GeneratedMockResponse> {
+  const response = await fetch(`${API_BASE_URL}/mock/generate-pois`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      city: payload.city ?? "北京",
+      area: payload.area ?? "三里屯",
+      theme: payload.theme ?? "低排队约会路线",
+      count: payload.count ?? 6
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("Mock POI 生成接口暂时不可用");
+  }
+
+  return normalizeGeneratedMockResponse(await response.json());
+}
+
+function normalizeGeneratedMockResponse(response: GeneratedMockResponse): GeneratedMockResponse {
+  return {
+    ...response,
+    users: (response.users ?? []).map((user) => ({
+      ...user,
+      user_type: user.user_type ?? "regular",
+      priority_weights: user.priority_weights ?? {},
+      explain_focus: user.explain_focus ?? [],
+      preferences: user.preferences ?? [],
+      avoidances: user.avoidances ?? []
+    })),
+    pois: (response.pois ?? []).map((poi) => normalizeMockPoi(poi))
+  };
+}
+
+function normalizeMockPoi(poi: MockPoi & Record<string, unknown>): MockPoi {
+  return {
+    ...poi,
+    queueMinutes: numberValue(poi.queueMinutes ?? poi.queue_minutes) ?? 0,
+    reviewCount: numberValue(poi.reviewCount ?? poi.review_count),
+    avgPrice: numberValue(poi.avgPrice ?? poi.avg_price),
+    openHours: stringValue(poi.openHours ?? poi.open_hours),
+    businessStatus: stringValue(poi.businessStatus ?? poi.business_status),
+    visitDurationMinutes: numberValue(poi.visitDurationMinutes ?? poi.visit_duration_minutes),
+    ugcSummary: stringValue(poi.ugcSummary ?? poi.ugc_summary),
+    platformBadges: arrayValue<string>(poi.platformBadges ?? poi.platform_badges),
+    serviceOptions: arrayValue<string>(poi.serviceOptions ?? poi.service_options),
+    riskNotes: arrayValue<string>(poi.riskNotes ?? poi.risk_notes),
+    tags: arrayValue<string>(poi.tags),
+  };
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function arrayValue<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+// ===== SSE 流式交互接口 =====
+
+export type StreamCallbacks = {
+  /** 收到 trace 元信息（events 为空，status 为 running） */
+  onTraceMeta?: (trace: AgentTrace) => void;
+  /** 收到单个 trace event */
+  onTraceEvent?: (event: TraceEvent, accumulatedEvents: TraceEvent[]) => void;
+  /** 收到完整 response（包含最终 trace、plans 等） */
+  onResponseComplete?: (response: InteractionResponsePayload) => void;
+  /** SSE 连接错误 */
+  onError?: (error: Error) => void;
+};
+
+/**
+ * 流式调用 /interactions/respond/stream，通过 SSE 逐步接收 trace events。
+ * 返回一个 abort 函数，调用可中断 SSE 连接。
+ */
+export function interactRespondStream(
+  payload: InteractionRequestPayload,
+  callbacks: StreamCallbacks
+): () => void {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new DzUltraApiError("真实接口响应超时，已准备切换 Mock fallback", "timeout", `${AGENT_TIMEOUT_MS}ms`);
+
+  (async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/interactions/respond/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          user_id: payload.user_id ?? "anonymous",
+          message: payload.message,
+          city: payload.city ?? "北京",
+          plan_mode: payload.plan_mode ?? true,
+          interaction_context: payload.interaction_context,
+          constraints: payload.constraints ?? [],
+          clarification_answers: payload.clarification_answers ?? {},
+          preference_detection_enabled: payload.preference_detection_enabled ?? true
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`流式交互接口返回 ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("无法获取 SSE 流");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let accumulatedEvents: TraceEvent[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // 解析 SSE 消息：以 \n\n 分隔
+        const messages = buffer.split("\n\n");
+        buffer = messages.pop() ?? ""; // 最后一个可能不完整，保留
+
+        for (const message of messages) {
+          if (!message.trim()) continue;
+
+          let eventType = "";
+          let data = "";
+
+          for (const line of message.split("\n")) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              data = line.slice(6);
+            }
+          }
+
+          if (!data) continue;
+
+          try {
+            const parsed = JSON.parse(data);
+
+            if (eventType === "trace_meta") {
+              accumulatedEvents = [];
+              callbacks.onTraceMeta?.(parsed as AgentTrace);
+            } else if (eventType === "trace_event") {
+              accumulatedEvents = [...accumulatedEvents, parsed as TraceEvent];
+              callbacks.onTraceEvent?.(parsed as TraceEvent, accumulatedEvents);
+            } else if (eventType === "response_complete") {
+              callbacks.onResponseComplete?.(parsed as InteractionResponsePayload);
+            }
+          } catch {
+            // 忽略解析失败的 SSE 消息
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name !== "AbortError") {
+        callbacks.onError?.(error);
+      }
     }
-    throw new DzUltraApiError(
-      "真实接口网络错误，已准备切换 Mock fallback",
-      "network_error",
-      error instanceof Error ? error.message : String(error)
-    );
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
+  })();
 
-function assertRoutePlanResponse(value: unknown): asserts value is RoutePlanResponsePayload {
-  if (!isRecord(value) || typeof value.trace_id !== "string" || !isRecord(value.trace) || !Array.isArray(value.trace.events)) {
-    throw new DzUltraApiError("路线接口返回结构不合法，已准备切换 Mock fallback", "invalid_response");
-  }
-}
-
-function positiveIntegerFromEnv(value: string | undefined, fallback: number) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return () => controller.abort();
 }

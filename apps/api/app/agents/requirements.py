@@ -1,7 +1,17 @@
+import json
 import re
 from typing import Any
 
-from app.models.schemas import ClarificationCard, RequirementSummary, RoutePlanRequest
+from pydantic import ValidationError
+
+from app.models.schemas import (
+    ClarificationCard,
+    ConstraintDiscoveryLlmOutput,
+    ConstraintEvidence,
+    PlanningConstraint,
+    RequirementSummary,
+    RoutePlanRequest,
+)
 
 
 CITY_KEYWORDS = ["北京", "上海", "广州", "深圳", "成都", "杭州"]
@@ -24,6 +34,20 @@ PLANNING_KEYWORDS = [
     "下午",
     "上午",
 ]
+PLANNING_CONTEXT_KEYWORDS = [
+    "约会",
+    "带娃",
+    "亲子",
+    "孩子",
+    "今天",
+    "今晚",
+    "周末",
+    "上午",
+    "下午",
+    "逛",
+    "看展",
+]
+
 REFINEMENT_ONLY_KEYWORDS = ["换掉", "换成", "保留", "重新生成", "不想吃", "不想喝"]
 NON_PLANNING_KEYWORDS = ["不想做计划", "先不规划", "取消规划", "不用规划", "只是聊聊", "没想好"]
 
@@ -90,11 +114,37 @@ def _classify_intent(goal: str, plan_mode: bool = True) -> str:
         return "ambiguous"
     if any(keyword in goal for keyword in NON_PLANNING_KEYWORDS):
         return "non_planning"
-    asks_nearby_poi = any(keyword in goal for keyword in ["附近", "周边"]) and any(
+    # "有什么/有没有/推荐/哪家/几个"推荐查询模式
+    asks_recommendation = any(
         keyword in goal for keyword in ["有什么", "有没有", "推荐", "哪家", "几个"]
     )
+    # "附近/周边"位置限定
+    has_nearby = any(keyword in goal for keyword in ["附近", "周边"])
+    # "附近有X吗"简单存在性查询（如"附近有便利店吗"）
+    asks_nearby_existence = (
+        has_nearby and "有" in goal and "吗" in goal and not asks_recommendation
+    )
     asks_full_route = any(keyword in goal for keyword in ["路线", "规划", "安排", "半天", "一天", "先", "再"])
-    if asks_nearby_poi and not asks_full_route:
+    # 简单存在性查询：不含规划上下文时始终 non_planning
+    if asks_nearby_existence and not asks_full_route:
+        has_planning_context = any(keyword in goal for keyword in PLANNING_CONTEXT_KEYWORDS)
+        if not has_planning_context and "吃" in goal and "看展" in goal:
+            has_planning_context = True
+        if has_planning_context:
+            # 有规划上下文但用户关闭路线规划模式时，倾向普通问答
+            return "planning" if plan_mode else "ambiguous"
+        return "non_planning"
+    # 推荐查询模式：检查是否同时包含规划上下文
+    if asks_recommendation and not asks_full_route:
+        has_planning_context = any(keyword in goal for keyword in PLANNING_CONTEXT_KEYWORDS)
+        if not has_planning_context and "吃" in goal and "看展" in goal:
+            has_planning_context = True
+        if has_planning_context:
+            # 有规划上下文但用户关闭路线规划模式时，倾向普通问答
+            return "planning" if plan_mode else "ambiguous"
+        # 纯推荐查询，无规划上下文：plan_mode 决定倾向
+        if plan_mode:
+            return "ambiguous"
         return "non_planning"
     has_planning_context = any(
         keyword in goal
@@ -420,3 +470,294 @@ def _parse_route_purpose(goal: str) -> str:
 def _needs_taste_question(collected: dict[str, Any]) -> bool:
     food_preference = str(collected.get("food_preference") or "")
     return any(keyword in food_preference for keyword in ["主食", "小吃", "特色"])
+
+
+# ---------------------------------------------------------------------------
+# LLM-powered ConstraintDiscoveryAgent
+# ---------------------------------------------------------------------------
+
+# Fields that block planning when missing.
+BLOCKING_FIELDS = {"group_size", "time_window", "food_preference"}
+
+# Fact categories that LLM must NOT generate; it can only mark them for grounding.
+FACT_CATEGORIES = {"weather", "distance", "business_hours", "queue", "traffic"}
+
+
+def build_constraint_discovery_messages(request: RoutePlanRequest) -> list[dict[str, str]]:
+    """Build the LongCat prompt for ConstraintDiscoveryAgent.
+
+    The LLM must output a structured JSON matching ConstraintDiscoveryLlmOutput.
+    It may NOT generate weather, distance, business hours, queue or traffic facts;
+    it can only flag them as requires_grounding.
+    """
+
+    goal = request.goal.strip()
+    answers = request.clarification_answers
+    round_index = 2 if answers else 1
+    max_cards = 3 if round_index >= 2 else 4
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 DZUltra 的 ConstraintDiscoveryAgent。你的任务是理解用户的出行目标，"
+                "抽取结构化需求摘要、约束账本草稿和补全卡片。\n\n"
+                "关键规则：\n"
+                "1. 你不能生成天气、距离、通勤时间、营业状态、排队人数等事实。"
+                "如果你判断某个约束需要这些事实来验证，在 grounding_requests 中标记，"
+                "并在 constraint_ledger_patch 中将 requires_grounding 设为 true。\n"
+                "2. 如果缺少阻塞字段（城市/区域、时间窗、人数、是否安排吃喝），"
+                "你必须在 clarification_cards 中输出追问卡片。\n"
+                f"3. 当前是第 {round_index} 轮追问。最多追问 2 轮；"
+                f"第 2 轮最多 {max_cards} 个问题。\n"
+                "4. 每个约束必须标注 source 和 reliability。\n"
+                "5. 只输出一个 JSON 对象，不要 Markdown，不要解释正文。\n"
+                "6. clarification_cards 的 round_index 必须与当前轮次一致。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "user_goal": goal,
+                    "city": request.city,
+                    "constraints": request.constraints,
+                    "plan_mode": request.plan_mode,
+                    "clarification_answers": answers if answers else None,
+                    "round_index": round_index,
+                    "max_clarification_cards": max_cards,
+                    "blocking_fields": sorted(BLOCKING_FIELDS),
+                    "output_schema": {
+                        "requirement_summary": {
+                            "status": "ready | needs_clarification | input_not_plannable",
+                            "intent_kind": "planning | non_planning | refinement_without_context | ambiguous",
+                            "can_plan": "布尔值",
+                            "collected": {
+                                "city": "字符串或 null",
+                                "area": "字符串或 null",
+                                "group_size": "整数或 null",
+                                "time_window": "字符串如 14:00-18:30 或 null",
+                                "food_preference": "字符串或 null",
+                                "budget_per_person": "整数或 null",
+                                "taste": "字符串或 null",
+                                "mobility": "字符串或 null",
+                                "route_purpose": "字符串如 约会/亲子出行/本地路线",
+                            },
+                            "missing_required_fields": "缺失的阻塞字段列表",
+                            "assumptions": "对非阻塞字段使用的默认假设列表",
+                            "user_visible_summary": "给用户看的需求总结行列表",
+                            "next_action": "一句话说明下一步",
+                        },
+                        "clarification_cards": [
+                            {
+                                "id": "clarify-xxx",
+                                "question": "追问问题",
+                                "field": "people | time_window | food | taste | ...",
+                                "ui_component": "number_picker | choice_buttons | time_range_picker | budget_picker | free_text",
+                                "options": ["选项1", "选项2"],
+                                "default_value": "默认选项",
+                                "allow_other": True,
+                                "round_index": round_index,
+                                "blocks_planning": "布尔值，缺阻塞字段时为 true",
+                                "required": "布尔值",
+                                "reason": "为什么需要追问这个字段",
+                            }
+                        ],
+                        "constraint_ledger_patch": [
+                            {
+                                "id": "location.city",
+                                "label": "城市",
+                                "description": "约束描述",
+                                "category": "location | time | people | food | budget | mobility | weather | traffic | poi | preference",
+                                "hardness": "hard | soft",
+                                "source": "user_explicit | user_implicit | llm_inference | system_default",
+                                "reliability": "verified | inferred | missing",
+                                "status": "discovered | needs_clarification | assumed",
+                                "impact": ["filter", "boost", "clarify", "explain"],
+                                "weight": "0 到 1 的数字",
+                                "requires_grounding": "布尔值，需要 provider 验证时为 true",
+                                "requires_clarification": "布尔值，需要追问时为 true",
+                            }
+                        ],
+                        "assumptions": ["对非阻塞字段使用的默认假设"],
+                        "grounding_requests": [
+                            "weather | poi_search | route_matrix | business_hours | queue | traffic"
+                        ],
+                    },
+                    "required_json_only": True,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+
+def llm_analyze_route_requirements(
+    request: RoutePlanRequest,
+) -> tuple[
+    RequirementSummary,
+    list[ClarificationCard],
+    list[PlanningConstraint],
+    list[str],
+    list[str],
+    dict[str, Any],
+]:
+    """Use LongCat to generate structured requirement analysis.
+
+    Returns (requirement_summary, clarification_cards, constraint_ledger_patch,
+             assumptions, grounding_requests, trace_info).
+
+    On any failure (provider error, JSON parse error, schema validation error),
+    falls back to the deterministic ``analyze_route_requirements`` and returns
+    the fallback results with trace_info indicating the fallback reason.
+    """
+
+    from app.providers import provider_adapter
+
+    trace_info: dict[str, Any] = {
+        "provider": None,
+        "llm_called": False,
+        "schema_validation": None,
+        "fallback_used": False,
+        "fallback_reason": None,
+    }
+
+    messages = build_constraint_discovery_messages(request)
+    deterministic_summary, deterministic_cards = analyze_route_requirements(request)
+
+    # Build fallback JSON from deterministic results for provider_adapter
+    fallback_json = _build_fallback_json(deterministic_summary, deterministic_cards, request)
+
+    trace_info["llm_called"] = True
+    provider_result = provider_adapter.llm_chat_completion(
+        messages,
+        purpose="constraint_discovery",
+        fallback_content=fallback_json,
+        temperature=0,
+        max_tokens=1200,
+    )
+    provider_call = provider_result.trace_output()
+    trace_info["provider_call"] = provider_call
+    trace_info["provider"] = provider_call.get("provider")
+
+    if provider_result.fallback_used:
+        # Provider itself fell back to deterministic template
+        fallback_reason = provider_result.error or "LongCat provider failed for constraint_discovery."
+        trace_info["fallback_used"] = True
+        trace_info["fallback_reason"] = fallback_reason
+        trace_info["schema_validation"] = {"valid": False, "source": "provider_fallback", "error": fallback_reason}
+        return (
+            deterministic_summary,
+            deterministic_cards,
+            [],
+            deterministic_summary.assumptions,
+            [],
+            trace_info,
+        )
+
+    content = _extract_llm_content(provider_result.data)
+    trace_info["raw_content_preview"] = content[:300]
+
+    # Try to parse and validate LLM output
+    try:
+        parsed_payload = _parse_constraint_discovery_json(content)
+        validated = ConstraintDiscoveryLlmOutput.model_validate(parsed_payload)
+    except (json.JSONDecodeError, ValueError, TypeError, ValidationError) as exc:
+        fallback_reason = f"LongCat constraint_discovery JSON parse/schema validation failed: {exc}"
+        trace_info["fallback_used"] = True
+        trace_info["fallback_reason"] = fallback_reason
+        trace_info["schema_validation"] = {"valid": False, "source": "longcat", "error": str(exc)}
+        return (
+            deterministic_summary,
+            deterministic_cards,
+            [],
+            deterministic_summary.assumptions,
+            [],
+            trace_info,
+        )
+
+    # Post-validation: enforce guardrails on LLM output
+    summary = validated.requirement_summary
+    cards = validated.clarification_cards
+    ledger_patch = validated.constraint_ledger_patch
+    assumptions = validated.assumptions
+    grounding_requests = validated.grounding_requests
+
+    # Enforce: missing blocking fields must produce clarification_cards
+    if summary.intent_kind == "planning" and summary.missing_required_fields:
+        card_fields = {card.field for card in cards if card.blocks_planning}
+        missing_blocking = set(summary.missing_required_fields) & BLOCKING_FIELDS
+        if not missing_blocking.issubset(card_fields):
+            # LLM missed some blocking clarification cards; add them from deterministic
+            det_by_field = {card.field: card for card in deterministic_cards if card.blocks_planning}
+            for field in missing_blocking - card_fields:
+                if field in det_by_field:
+                    cards.append(det_by_field[field])
+
+    # Enforce: round_index on cards
+    round_index = 2 if request.clarification_answers else 1
+    max_cards = 3 if round_index >= 2 else 4
+    cards = cards[:max_cards]
+    for card in cards:
+        card.round_index = round_index
+
+    # Enforce: LLM must not generate fact constraints, only mark requires_grounding
+    for constraint in ledger_patch:
+        if constraint.category in FACT_CATEGORIES:
+            constraint.requires_grounding = True
+            # Clear any fact-like evidence that LLM might have fabricated
+            if constraint.reliability not in ("missing", "inferred"):
+                constraint.reliability = "inferred"
+
+    # Enforce: can_plan must be consistent with blocking cards
+    has_blocking_cards = any(card.blocks_planning for card in cards)
+    if has_blocking_cards and summary.can_plan:
+        summary.can_plan = False
+        if summary.status == "ready":
+            summary.status = "needs_clarification"
+
+    trace_info["schema_validation"] = {"valid": True, "source": "longcat"}
+    trace_info["fallback_used"] = False
+
+    return summary, cards, ledger_patch, assumptions, grounding_requests, trace_info
+
+
+def _build_fallback_json(
+    summary: RequirementSummary,
+    cards: list[ClarificationCard],
+    request: RoutePlanRequest,
+) -> str:
+    """Build a deterministic fallback JSON for the LLM provider."""
+    return json.dumps(
+        {
+            "requirement_summary": summary.model_dump(mode="json"),
+            "clarification_cards": [card.model_dump(mode="json") for card in cards],
+            "constraint_ledger_patch": [],
+            "assumptions": summary.assumptions,
+            "grounding_requests": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _extract_llm_content(payload: dict[str, Any]) -> str:
+    """Extract the text content from an LLM chat completion payload."""
+    return payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+
+def _parse_constraint_discovery_json(content: str) -> dict[str, Any]:
+    """Parse the LLM response content into a JSON dict, handling code fences."""
+    text = content.strip()
+    if text.startswith("```"):
+        lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+        text = "\n".join(lines).strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("LongCat constraint_discovery response did not contain a JSON object.")
+        text = text[start : end + 1]
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("LongCat constraint_discovery response JSON must be an object.")
+    return payload

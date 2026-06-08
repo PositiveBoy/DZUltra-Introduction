@@ -421,7 +421,7 @@ class AmapMapProvider:
         response = httpx.get(
             f"{self._base_url}{path}",
             params={"key": settings.amap_web_service_key, **params},
-            timeout=settings.provider_request_timeout_seconds,
+            timeout=self._timeout_seconds(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -470,6 +470,11 @@ class AmapMapProvider:
         if mode == "walk":
             return "3"
         return "1"
+
+    def _timeout_seconds(self) -> float:
+        request_timeout = getattr(settings, "provider_request_timeout_seconds", 8)
+        fast_timeout = getattr(settings, "provider_fast_timeout_seconds", request_timeout)
+        return min(request_timeout, fast_timeout)
 
 
 amap_map_provider = AmapMapProvider(mock_map_provider)

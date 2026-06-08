@@ -13,15 +13,85 @@ export type MobileShellView =
   | "settings"
   | "error";
 
+/** 内容块类型，与 USER_JOURNEY_DESIGN.md "内容块拆分口径"对齐 */
+export type FlowBlockType =
+  | "user_input"
+  | "agent_chain"
+  | "clarification"
+  | "agent_reaction"
+  | "summary"
+  | "plans"
+  | "selected"
+  | "todo";
+
+/** 纵向滚动容器中的一个内容块 */
+export type FlowBlock = {
+  id: string;
+  type: FlowBlockType;
+  timestamp: number;
+};
+
 export type InputMode = "text" | "voice";
 export type TransportMode = "drive" | "taxi" | "transit" | "walk" | "metro" | "bike";
 
 export type MockUser = {
   id: string;
   name: string;
+  user_type?: "new" | "regular";
   scenario: string;
   preferences: string[];
   avoidances: string[];
+};
+
+// 后端 MockUser 完整字段；用于 AI Mock 生成器面板的展示与"应用到主链路"。
+export type MockUserFull = {
+  id: string;
+  name: string;
+  user_type?: "new" | "regular";
+  city?: string;
+  scenario: string;
+  default_goal?: string;
+  group_size?: number;
+  time_window?: string;
+  budget_per_person?: number;
+  transport_preference?: string;
+  preferences: string[];
+  avoidances: string[];
+  priority_weights: Record<string, number>;
+  explain_focus: string[];
+};
+
+export type GenerateMockUserRequest = {
+  user_type?: "new" | "regular";
+  scenario?: string;
+  city?: string;
+};
+
+export type GenerateMockPoisRequest = {
+  city?: string;
+  area?: string;
+  theme?: string;
+  count?: number;
+};
+
+export type MockLocation = {
+  id: string;
+  city: string;
+  area?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  source: "manual" | "random";
+  reliability: "user_input" | "mocked";
+  label: string;
+};
+
+export type GeneratedMockResponse = {
+  fallback_used: boolean;
+  source: "deterministic_template" | "longcat" | "openai_agents_sdk";
+  metadata: Record<string, unknown>;
+  users: MockUserFull[];
+  pois: MockPoi[];
 };
 
 export type RecommendedDish = {
@@ -68,6 +138,7 @@ export type MockPoi = {
   decisionSignals?: Record<string, string>;
   riskNotes?: string[];
   telephone?: string;
+  headPic?: string;
   images?: string[];
   recommendedDishes?: RecommendedDish[];
   tasteRating?: number;
@@ -124,12 +195,26 @@ export type DemoPoiStop = RouteStop & {
   queueMinutes: number;
   tags: string[];
   ugcSummary: string;
+  tasteSummary?: string;
+  envSummary?: string;
+  images?: string[];
+  headPic?: string;
   distanceFromPrevious: string;
   actions: PoiAction[];
+  transportOptions?: TransportOption[];
+  platformBadge?: string;
+  platformBadges?: string[];
+  tasteRating?: number;
+  environmentRating?: number;
+  serviceRating?: number;
+  recommendedDishes?: string[];
+  reviewCount?: number;
+  positiveRate?: string;
 };
 
 export type DemoRoutePlan = Omit<RoutePlan, "stops"> & {
   subtitle: string;
+  description?: string;
   theme: string;
   badge: string;
   mapTone: "orange" | "blue" | "green";
@@ -196,6 +281,38 @@ export type InteractionContext = {
   pending_clarification_card_id?: string;
   current_run_status?: string;
   metadata?: Record<string, unknown>;
+};
+
+export type IntentKind = "planning" | "non_planning" | "refinement_without_context" | "ambiguous";
+
+export type InteractionRoutingResult = {
+  interaction_type: InteractionType;
+  intent_kind: IntentKind;
+  confidence: number;
+  routing_reason: string;
+  needs_followup?: boolean;
+};
+
+export type InteractionRequestPayload = {
+  user_id?: string;
+  message: string;
+  city?: string;
+  plan_mode?: boolean;
+  interaction_context?: InteractionContext;
+  constraints?: string[];
+  clarification_answers?: Record<string, unknown>;
+  preference_detection_enabled?: boolean;
+};
+
+export type InteractionResponsePayload = {
+  interaction_type: InteractionType;
+  trace_id: string;
+  trace: AgentTrace;
+  routing: InteractionRoutingResult;
+  chat?: ChatResponsePayload;
+  route_plan?: RoutePlanResponsePayload;
+  refinement?: RoutePlanResponsePayload;
+  selection?: Record<string, unknown>;
 };
 
 export type RoutePlanRequestPayload = {
@@ -277,6 +394,36 @@ export type RoutePlanResponsePayload = {
   };
   trace: AgentTrace;
   refinement_diff?: RefinementDiff;
+};
+
+export type ChatRequestPayload = {
+  user_id?: string;
+  message: string;
+  city?: string;
+  plan_mode?: boolean;
+  interaction_context?: InteractionContext;
+  constraints?: string[];
+  related_poi_limit?: number;
+};
+
+export type ChatRelatedPoi = MockPoi & {
+  queue_minutes?: number;
+  avg_price?: number;
+  ugc_summary?: string;
+};
+
+export type ChatResponsePayload = {
+  trace_id: string;
+  answer: string;
+  related_pois: ChatRelatedPoi[];
+  can_convert_to_plan: boolean;
+  used_preferences: string[];
+  interaction_type: "chat_answer";
+  fallback_used?: boolean;
+  fallback_reason?: string;
+  poi_provider?: string;
+  answer_provider?: string;
+  trace: AgentTrace;
 };
 
 export type TraceEventType =
@@ -469,8 +616,21 @@ export type ApiRouteStop = {
   queue_minutes?: number;
   tags?: string[];
   ugc_summary?: string;
+  taste_summary?: string;
+  env_summary?: string;
+  images?: string[];
+  head_pic?: string;
   distance_from_previous?: string;
   actions?: ApiPoiAction[];
+  transport_options?: ApiTransportOption[];
+  platform_badge?: string;
+  platform_badges?: string[];
+  taste_rating?: number;
+  environment_rating?: number;
+  service_rating?: number;
+  recommended_dishes?: string[];
+  review_count?: number;
+  positive_rate?: string;
 };
 
 export type ApiTodoItem = {
@@ -488,6 +648,7 @@ export type ApiRoutePlan = {
   id: string;
   title: string;
   subtitle?: string;
+  description?: string;
   theme?: string;
   badge?: string;
   score: number;

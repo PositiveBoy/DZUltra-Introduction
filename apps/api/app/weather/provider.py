@@ -24,7 +24,10 @@ class CaiyunWeatherProvider:
                 "dailysteps": "1",
                 "hourlysteps": "24",
             },
-            timeout=settings.provider_request_timeout_seconds,
+            timeout=min(
+                getattr(settings, "provider_request_timeout_seconds", 8),
+                getattr(settings, "provider_fast_timeout_seconds", getattr(settings, "provider_request_timeout_seconds", 8)),
+            ),
         )
         response.raise_for_status()
         payload = response.json()

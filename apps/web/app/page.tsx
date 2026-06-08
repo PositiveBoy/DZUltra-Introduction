@@ -97,7 +97,7 @@ function MobilePreviewStage() {
       <div className="flex min-h-[54px] shrink-0 flex-wrap items-center gap-2 border-b border-white/70 bg-white/72 px-4 py-2 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
           <Smartphone className="h-4 w-4 text-dz-orange" />
-          <span className="text-xs font-black text-dz-ink">MobileShell</span>
+          <span className="text-xs font-black text-dz-ink">用户端演示</span>
           <span className="rounded-full bg-[#fff7dd] px-2 py-0.5 text-[11px] font-bold text-[#9a5c00]">
             {displayScale}%
           </span>

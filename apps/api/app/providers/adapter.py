@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 import httpx
@@ -60,7 +61,7 @@ class ProviderAdapterLayer:
     metadata so Debug Trace can explain real calls and fallback behavior.
     """
 
-    def poi_search(self, intent: dict[str, Any], profile: dict[str, Any]) -> ProviderCallResult:
+    def poi_search(self, intent: dict[str, Any], profile: dict[str, Any], weather_constraints: dict[str, Any] | None = None) -> ProviderCallResult:
         params = {
             "city": intent.get("city"),
             "keywords": intent.get("required_categories", []),
@@ -79,21 +80,18 @@ class ProviderAdapterLayer:
                         reliability="verified",
                         fallback_used=False,
                     )
-            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                fallback = mock_poi_search(intent, profile)
-                return ProviderCallResult(
+                return self._mock_poi_fallback(
+                    intent,
+                    profile,
+                    params,
                     provider="amap",
-                    capability="poi_search",
-                    params=params,
-                    data=fallback,
-                    summary=self._poi_summary(fallback),
-                    reliability="mocked",
-                    fallback_used=True,
-                    fallback_provider="mock_poi_search",
-                    error=str(exc),
+                    reason="Amap POI response was valid but returned no usable candidates.",
+                    weather_constraints=weather_constraints,
                 )
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                return self._mock_poi_fallback(intent, profile, params, provider="amap", reason=str(exc), weather_constraints=weather_constraints)
 
-        fallback = mock_poi_search(intent, profile)
+        fallback = mock_poi_search(intent, profile, weather_constraints)
         return ProviderCallResult(
             provider="mock_poi_search",
             capability="poi_search",
@@ -257,12 +255,14 @@ class ProviderAdapterLayer:
             "max_tokens": max_tokens,
         }
         if settings.llm_provider == "longcat" and settings.has_real_longcat():
+            started_at = time.perf_counter()
             try:
                 payload = longcat_client.chat_completion(
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                elapsed_ms = self._elapsed_ms(started_at)
                 return ProviderCallResult(
                     provider="longcat",
                     capability="llm_chat_completion",
@@ -271,9 +271,15 @@ class ProviderAdapterLayer:
                     summary=self._llm_summary(payload),
                     reliability="verified",
                     fallback_used=False,
-                    metadata={"model": settings.longcat_model},
+                    metadata={
+                        "model": settings.longcat_model,
+                        "elapsed_ms": elapsed_ms,
+                        "timing": payload.get("_dzultra_provider_timing", {}),
+                        "timeout_seconds": self._llm_timeout_seconds(),
+                    },
                 )
             except (httpx.HTTPError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+                elapsed_ms = self._elapsed_ms(started_at)
                 payload = self._mock_llm_payload(fallback_content)
                 return ProviderCallResult(
                     provider="longcat",
@@ -284,8 +290,13 @@ class ProviderAdapterLayer:
                     reliability="mocked",
                     fallback_used=True,
                     fallback_provider="deterministic_template",
-                    error=str(exc),
-                    metadata={"model": settings.longcat_model},
+                    error=f"{exc} (elapsed_ms={elapsed_ms})",
+                    metadata={
+                        "model": settings.longcat_model,
+                        "elapsed_ms": elapsed_ms,
+                        "timeout_seconds": self._llm_timeout_seconds(),
+                        "backup_retry_enabled": getattr(settings, "longcat_backup_retry_enabled", False),
+                    },
                 )
 
         payload = self._mock_llm_payload(fallback_content)
@@ -301,6 +312,36 @@ class ProviderAdapterLayer:
             metadata={"reason": "LONGCAT_API_KEY missing or placeholder; deterministic fallback used."},
         )
 
+    def template_llm_completion(
+        self,
+        *,
+        purpose: str,
+        fallback_content: str,
+        reason: str,
+        temperature: float = 0.0,
+        max_tokens: int = 0,
+    ) -> ProviderCallResult:
+        payload = self._mock_llm_payload(fallback_content)
+        params = {
+            "provider": "deterministic_template",
+            "model": "deterministic_template",
+            "purpose": purpose,
+            "message_count": 0,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        return ProviderCallResult(
+            provider="deterministic_template",
+            capability="llm_chat_completion",
+            params=params,
+            data=payload,
+            summary=self._llm_summary(payload),
+            reliability="mocked",
+            fallback_used=True,
+            fallback_provider=None,
+            metadata={"reason": reason, "llm_skipped": True},
+        )
+
     def mock_deep_poi_enrichment(self, pois: list[MockPoi]) -> ProviderCallResult:
         data = {
             "queue": [
@@ -308,11 +349,15 @@ class ProviderAdapterLayer:
                 for poi in pois
             ],
             "recommended_dishes": [
-                {"poi_id": poi.id, "dishes": [dish.model_dump(mode="json") for dish in poi.recommended_dishes]}
+                {
+                    "poi_id": poi.id,
+                    "dishes": [dish.model_dump(mode="json") for dish in poi.recommended_dishes],
+                    "reliability": "mocked",
+                }
                 for poi in pois
             ],
             "ugc": [
-                {"poi_id": poi.id, "summary": poi.ugc_summary, "risk_notes": poi.risk_notes}
+                {"poi_id": poi.id, "summary": poi.ugc_summary, "risk_notes": poi.risk_notes, "reliability": "mocked"}
                 for poi in pois
             ],
         }
@@ -334,10 +379,12 @@ class ProviderAdapterLayer:
             },
         )
 
-    def preview_for_plan(self, plan: RoutePlan):
+    def preview_for_plan(self, plan: RoutePlan, poi_by_id: dict[str, MockPoi] | None = None):
         if settings.map_provider == "amap" and settings.has_real_amap():
-            locations = self._locations_for_plan(plan)
+            locations = self._locations_for_plan(plan, poi_by_id)
             return current_map_provider().static_preview(StaticPreviewRequest(locations=locations)).preview
+        if poi_by_id:
+            return mock_map_provider.preview_for_locations(self._locations_for_plan(plan, poi_by_id))
         return mock_map_provider.preview_for_plan(plan)
 
     def _amap_poi_search(self, intent: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
@@ -358,16 +405,23 @@ class ProviderAdapterLayer:
                 },
             )
             category_items = []
-            for raw in payload.get("pois") or []:
+            raw_pois = payload.get("pois")
+            if not isinstance(raw_pois, list):
+                raise ValueError("Amap POI response field 'pois' is not a list.")
+            for raw in raw_pois:
+                if not isinstance(raw, dict):
+                    raise ValueError("Amap POI response contains a non-object POI item.")
                 poi = self._mock_poi_from_amap(raw, category, city, profile)
                 score = int(poi.rating * 10) + max(0, 12 - poi.queue_minutes)
                 candidate = {
                     "poi": poi.model_dump(mode="json"),
+                    "poi_fact": self._poi_fact(poi),
                     "score": score,
                     "reason": f"高德 POI 命中 {keyword}，评分 {poi.rating}，人均 {poi.avg_price or '未知'} 元。",
                     "preference_hits": [],
                     "avoidance_hits": [],
                     "provider": "amap",
+                    "reliability": "verified",
                 }
                 category_items.append(candidate)
             ranked = sorted(category_items, key=lambda item: item["score"], reverse=True)
@@ -395,7 +449,7 @@ class ProviderAdapterLayer:
         response = httpx.get(
             f"https://restapi.amap.com{path}",
             params={"key": settings.amap_web_service_key, **params},
-            timeout=settings.provider_request_timeout_seconds,
+            timeout=self._provider_timeout_seconds(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -410,11 +464,53 @@ class ProviderAdapterLayer:
         photos = raw.get("photos") or []
         rating = self._float_or_default(biz_ext.get("rating") or raw.get("rating"), 4.3)
         avg_price = int(self._float_or_default(biz_ext.get("cost") or raw.get("cost"), 120))
+        local_enrichment = self._local_enrichment_for_category(category)
         fallback_tags = [self._label_for_category(category), city, "高德POI"]
         return MockPoi(
             id=f"amap-{raw.get('id') or raw.get('name')}",
             name=raw.get("name") or "高德候选 POI",
             category=category,  # type: ignore[arg-type]
+            source="amap",
+            reliability={
+                "name": "amap",
+                "address": "amap",
+                "latitude": "amap",
+                "longitude": "amap",
+                "rating": "amap",
+                "phone": "amap",
+                "images": "amap",
+                "queue_minutes": "mocked",
+                "ugc_summary": "mocked",
+                "recommended_dishes": "mocked",
+            },
+            field_reliability={
+                "id": "verified" if raw.get("id") else "inferred",
+                "name": "verified" if raw.get("name") else "mocked",
+                "category": "inferred",
+                "city": "verified",
+                "district": "verified" if raw.get("adname") else "missing",
+                "area": "verified" if business.get("business_area") or raw.get("adname") else "inferred",
+                "address": "verified" if isinstance(raw.get("address"), str) and raw.get("address") else "missing",
+                "latitude": "verified",
+                "longitude": "verified",
+                "rating": "verified" if biz_ext.get("rating") or raw.get("rating") else "mocked",
+                "avg_price": "verified" if biz_ext.get("cost") or raw.get("cost") else "mocked",
+                "open_hours": "verified" if biz_ext.get("open_time") else "missing",
+                "business_status": "verified" if raw.get("business_status") else "missing",
+                "telephone": "verified" if isinstance(raw.get("tel"), str) and raw.get("tel") else "missing",
+                "images": "verified" if photos else "missing",
+            },
+            enrichment_reliability={
+                "queue_minutes": "mocked",
+                "visit_duration_minutes": "mocked",
+                "ugc_summary": "mocked",
+                "ugc_highlights": "mocked",
+                "recommended_dishes": "mocked",
+                "platform_badges": "mocked",
+                "service_options": "mocked",
+                "decision_signals": "mocked",
+                "risk_notes": "mocked",
+            },
             city=city,
             district=raw.get("adname"),
             area=business.get("business_area") or raw.get("adname") or city,
@@ -423,16 +519,19 @@ class ProviderAdapterLayer:
             longitude=longitude,
             rating=rating,
             review_count=None,
-            queue_minutes=8,
-            tags=[tag for tag in [*(str(raw.get("tag") or "").split(";")), *fallback_tags] if tag],
+            queue_minutes=local_enrichment.queue_minutes,
+            tags=list(dict.fromkeys([tag for tag in [*(str(raw.get("tag") or "").split(";")), *fallback_tags, *local_enrichment.tags[:3]] if tag])),
             avg_price=avg_price,
             open_hours=biz_ext.get("open_time"),
             structured_open_hours=None,
             business_status=raw.get("business_status") or "营业状态待校验",
-            visit_duration_minutes=65,
-            ugc_summary="该 POI 来自高德搜索；排队、UGC、推荐菜由本地 Mock 数据兜底。",
-            platform_badges=["高德候选"],
-            service_options=["导航"],
+            visit_duration_minutes=local_enrichment.visit_duration_minutes or 65,
+            ugc_summary=local_enrichment.ugc_summary or "该 POI 来自高德搜索；排队、UGC、推荐菜由本地 Mock 数据兜底。",
+            ugc_highlights=local_enrichment.ugc_highlights,
+            platform_badges=list(dict.fromkeys(["高德候选", *local_enrichment.platform_badges[:2]])),
+            service_options=list(dict.fromkeys(["导航", *local_enrichment.service_options[:2]])),
+            recommended_dishes=local_enrichment.recommended_dishes,
+            risk_notes=local_enrichment.risk_notes[:3],
             decision_signals={
                 "selected_reason": "真实高德 POI 搜索命中本轮类别；深度体验字段由 Mock 兜底。",
                 "user_fit": f"匹配用户偏好：{'、'.join(profile.get('preferences', [])[:3]) or '本轮目标'}。",
@@ -444,6 +543,52 @@ class ProviderAdapterLayer:
                 if isinstance(photo, dict) and isinstance(photo.get("url"), str)
             ],
         )
+
+    def _mock_poi_fallback(
+        self,
+        intent: dict[str, Any],
+        profile: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        provider: str,
+        reason: str,
+        weather_constraints: dict[str, Any] | None = None,
+    ) -> ProviderCallResult:
+        fallback = mock_poi_search(intent, profile, weather_constraints)
+        return ProviderCallResult(
+            provider=provider,
+            capability="poi_search",
+            params=params,
+            data=fallback,
+            summary=self._poi_summary(fallback),
+            reliability="mocked",
+            fallback_used=True,
+            fallback_provider="mock_poi_search",
+            error=reason,
+            metadata={"fallback_reason": reason},
+        )
+
+    def _poi_fact(self, poi: MockPoi) -> dict[str, Any]:
+        return {
+            "id": poi.id,
+            "source": poi.source,
+            "name": poi.name,
+            "category": poi.category,
+            "city": poi.city,
+            "area": poi.area,
+            "address": poi.address,
+            "latitude": poi.latitude,
+            "longitude": poi.longitude,
+            "rating": poi.rating,
+            "avg_price": poi.avg_price,
+            "telephone": poi.telephone,
+            "images": poi.images,
+            "field_reliability": poi.field_reliability,
+            "enrichment_reliability": poi.enrichment_reliability,
+        }
+
+    def _local_enrichment_for_category(self, category: str) -> MockPoi:
+        return next((poi for poi in MOCK_POIS if poi.category == category), MOCK_POIS[0])
 
     def _poi_summary(self, retrieval: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -511,6 +656,7 @@ class ProviderAdapterLayer:
             "content_preview": content[:120],
             "usage": payload.get("usage", {}),
             "fallback_used": payload.get("fallback_used", False),
+            "timing": payload.get("_dzultra_provider_timing", {}),
         }
 
     def _mock_llm_payload(self, fallback_content: str) -> dict[str, Any]:
@@ -539,8 +685,21 @@ class ProviderAdapterLayer:
             return GeoCoordinate(latitude=location.latitude, longitude=location.longitude)
         return GeoCoordinate(latitude=39.9042, longitude=116.4074)
 
-    def _locations_for_plan(self, plan: RoutePlan) -> list[MapLocation]:
-        poi_by_id = {poi.id: poi for poi in MOCK_POIS}
+    def _provider_timeout_seconds(self) -> float:
+        request_timeout = getattr(settings, "provider_request_timeout_seconds", 8)
+        fast_timeout = getattr(settings, "provider_fast_timeout_seconds", request_timeout)
+        return min(request_timeout, fast_timeout)
+
+    def _llm_timeout_seconds(self) -> float:
+        request_timeout = getattr(settings, "llm_request_timeout_seconds", 20)
+        fast_timeout = getattr(settings, "llm_fast_timeout_seconds", request_timeout)
+        return min(request_timeout, fast_timeout)
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return round((time.perf_counter() - started_at) * 1000)
+
+    def _locations_for_plan(self, plan: RoutePlan, poi_by_id: dict[str, MockPoi] | None = None) -> list[MapLocation]:
+        poi_by_id = poi_by_id or {poi.id: poi for poi in MOCK_POIS}
         locations = []
         for stop in plan.stops:
             poi = poi_by_id.get(stop.poi_id)

@@ -98,9 +98,21 @@ def mock_user_profile_lookup(user_id: str, intent: dict) -> dict:
     }
 
 
-def mock_poi_search(intent: dict, profile: dict) -> dict:
+def mock_poi_search(intent: dict, profile: dict, weather_constraints: dict | None = None) -> dict:
     candidates_by_category: dict[str, list[dict]] = defaultdict(list)
     rejected = []
+
+    # Extract weather constraint flags
+    high_precipitation = False
+    extreme_temperature = False
+    good_weather = False
+    if weather_constraints:
+        high_precipitation = weather_constraints.get("high_precipitation", False)
+        extreme_temperature = weather_constraints.get("extreme_temperature", False)
+        good_weather = weather_constraints.get("good_weather", False)
+
+    outdoor_categories = {"entertainment"}  # outdoor/park-like categories
+    indoor_categories = {"food", "culture", "shopping", "dessert"}
 
     for poi in MOCK_POIS:
         booking_violation = _advance_booking_violation(poi, intent)
@@ -112,14 +124,32 @@ def mock_poi_search(intent: dict, profile: dict) -> dict:
         budget_bonus = 4 if poi.avg_price is not None and poi.avg_price <= profile["budget_per_person"] else 0
         score = int(poi.rating * 10) + max(0, 12 - poi.queue_minutes) + len(preference_hits) * 5
         score += budget_bonus - len(avoidance_hits) * 8
+
+        # Weather constraint: penalize outdoor POIs when precipitation is high
+        weather_penalty_reason = None
+        if high_precipitation and poi.category in outdoor_categories:
+            score -= 8
+            weather_penalty_reason = "降水概率较高，室外 POI 降权 -8 分"
+        if high_precipitation and poi.category in indoor_categories:
+            score += 2  # slight boost for indoor when rain expected
+        if extreme_temperature and poi.category in outdoor_categories:
+            score -= 4
+            weather_penalty_reason = (weather_penalty_reason or "") + "；极端温度，室外 POI 降权 -4 分"
+        if good_weather and poi.category in outdoor_categories:
+            score += 2
+
         selected_reason = poi.decision_signals.get("selected_reason")
+        reason = selected_reason or f"命中 {poi.category}，排队 {poi.queue_minutes} 分钟，标签：{', '.join(poi.tags)}。"
+        if weather_penalty_reason:
+            reason = f"{reason} {weather_penalty_reason}。"
+
         candidate = {
             "poi": poi.model_dump(),
             "score": score,
-            "reason": selected_reason
-            or f"命中 {poi.category}，排队 {poi.queue_minutes} 分钟，标签：{', '.join(poi.tags)}。",
+            "reason": reason,
             "preference_hits": preference_hits,
             "avoidance_hits": avoidance_hits,
+            "weather_penalty": weather_penalty_reason,
         }
         candidates_by_category[poi.category].append(candidate)
         if poi.category not in intent["required_categories"]:
@@ -142,11 +172,20 @@ def mock_poi_search(intent: dict, profile: dict) -> dict:
                     }
                 )
 
+    # If all candidates are outdoor and precipitation is high, add weather warning
+    all_outdoor = all(
+        MockPoi(**c["poi"]).category in outdoor_categories
+        for c in selected
+    )
+    weather_warning = None
+    if high_precipitation and all_outdoor and selected:
+        weather_warning = "建议关注天气变化"
+
     fallback_used = len(selected) < len(intent["required_categories"])
     if len(selected) < 3:
         available_pois = [poi for poi in MOCK_POIS if not _advance_booking_violation(poi, intent)]
         selected = [
-            {"poi": poi.model_dump(), "score": 90, "reason": "路线模板兜底 POI。", "preference_hits": poi.tags}
+            {"poi": poi.model_dump(), "score": 90, "reason": "路线模板兜底 POI。", "preference_hits": poi.tags, "weather_penalty": None}
             for poi in available_pois
         ]
 
@@ -159,6 +198,7 @@ def mock_poi_search(intent: dict, profile: dict) -> dict:
         "rejected": rejected,
         "candidate_count": len(selected),
         "fallback_used": fallback_used,
+        "weather_warning": weather_warning,
     }
 
 
@@ -192,8 +232,8 @@ def mock_route_scheduler(
     )
 
 
-def mock_constraint_checker(route: RoutePlan, intent: dict, profile: dict) -> dict:
-    poi_by_id = {poi.id: poi for poi in MOCK_POIS}
+def mock_constraint_checker(route: RoutePlan, intent: dict, profile: dict, retrieval: dict | None = None) -> dict:
+    poi_by_id = poi_lookup(retrieval)
     route_pois = [poi_by_id[stop.poi_id] for stop in route.stops if stop.poi_id in poi_by_id]
     avg_queue = sum(poi.queue_minutes for poi in route_pois) / max(len(route_pois), 1)
     total_avg_price = sum(poi.avg_price or 0 for poi in route_pois)
@@ -211,11 +251,12 @@ def mock_constraint_checker(route: RoutePlan, intent: dict, profile: dict) -> di
     ]
     queue_limit = 10 if "queue_minutes<=10" in intent["hard_constraints"] else 15
     business_issues = []
+    closed_statuses = {"已关停", "暂停营业", "已歇业", "永久关闭"}
     for stop in route.stops:
         poi = poi_by_id.get(stop.poi_id)
         if poi is None:
             continue
-        if poi.business_status and poi.business_status != "营业中":
+        if poi.business_status and poi.business_status in closed_statuses:
             business_issues.append(f"{poi.name} 当前状态为 {poi.business_status}")
         elif not _is_open_for_stop(poi, stop):
             business_issues.append(
@@ -291,14 +332,24 @@ def mock_constraint_checker(route: RoutePlan, intent: dict, profile: dict) -> di
 
 
 def mock_experience_copywriter(route: RoutePlan, retrieval: dict, constraints: list[RouteConstraint]) -> RoutePlan:
-    poi_by_id = {poi.id: poi for poi in MOCK_POIS}
+    poi_by_id = poi_lookup(retrieval)
     reason_items = list(retrieval.get("candidates", []))
     for pool_items in retrieval.get("candidate_pool", {}).values():
         reason_items.extend(pool_items)
     reason_by_id = {item["poi"]["id"]: item for item in reason_items}
     rewritten_stops = []
     for stop in route.stops:
-        poi = poi_by_id[stop.poi_id]
+        poi = poi_by_id.get(stop.poi_id)
+        if poi is None:
+            rewritten_stops.append(
+                stop.model_copy(
+                    update={
+                        "reason": stop.reason or "该站来自当前候选事实包，但缺少可展开的深度字段。"
+                    },
+                    deep=True,
+                )
+            )
+            continue
         hits = reason_by_id.get(stop.poi_id, {}).get("preference_hits", [])
         hit_text = f"，命中{','.join(hits)}" if hits else ""
         signal = poi.decision_signals.get("user_fit") or poi.ugc_summary
@@ -311,11 +362,14 @@ def mock_experience_copywriter(route: RoutePlan, retrieval: dict, constraints: l
         )
 
     satisfied_labels = [item.label for item in constraints if item.satisfied]
+    # Preserve original badge and title from the variant definition
+    original_badge = route.badge or "推荐"
+    original_title = route.title or "低排队约会路线"
     return route.model_copy(
         update={
-            "title": "低排队约会路线",
+            "title": original_title,
             "subtitle": "吃饭、看展、甜品顺路串联",
-            "badge": "推荐",
+            "badge": original_badge,
             "highlights": ["平均排队小于 10 分钟", "餐饮 + 文化 + 甜品", "移动距离短", *satisfied_labels[:2]],
             "stops": rewritten_stops,
             "constraints": constraints,
@@ -324,22 +378,307 @@ def mock_experience_copywriter(route: RoutePlan, retrieval: dict, constraints: l
     )
 
 
-def mock_route_judge(route: RoutePlan, constraints: list[RouteConstraint], profile: dict) -> dict:
-    satisfied_count = sum(1 for item in constraints if item.satisfied)
-    constraint_score = int(satisfied_count / max(len(constraints), 1) * 36)
-    queue_score = 30
-    experience_score = 22 if all(stop.reason for stop in route.stops) else 14
-    rating_score = 4
-    score = min(100, constraint_score + queue_score + experience_score + rating_score)
+def mock_plan_evaluator(
+    candidate_plans: list[RoutePlan],
+    retrieval: dict,
+    intent: dict,
+    profile: dict,
+    primary_score: int,
+    candidate_summaries: list[dict] | None = None,
+    weather_constraints: dict | None = None,
+) -> dict:
+    """Evaluate candidate routes, score them, and select top 3 diverse plans.
+
+    Returns:
+        dict with keys:
+        - final_plans: list[RoutePlan] – top 3 scored and explained plans
+        - rejected_routes: list[dict] – eliminated candidates with reasons
+        - evaluation_notes: dict – evaluator metadata for Trace
+    """
+    scored_plans: list[RoutePlan] = []
+    rejected_routes: list[dict] = []
+
+    for plan in candidate_plans:
+        constraint_result = mock_constraint_checker(plan, intent, profile, retrieval)
+        constraints = constraint_result["constraints"]
+        blocking_issues = constraint_result["blocking_issues"]
+
+        # Hard constraint violation check
+        hard_violations = [
+            c for c in constraints
+            if not c.satisfied and c.key in {"business_hours", "booking_readiness"}
+        ]
+        if hard_violations:
+            violation_reason = f"硬约束违反：{'；'.join(c.detail for c in hard_violations)}"
+            rejected_routes.append({
+                "route_id": plan.id,
+                "reason": violation_reason,
+                "rejected_route_reason": violation_reason,
+                "score": plan.score,
+            })
+            continue
+
+        # No-food constraint: reject plans with food/dessert when user doesn't want them
+        no_food = "food" not in intent.get("required_categories", []) and "dessert" not in intent.get("required_categories", [])
+        if no_food:
+            plan_categories = {stop.category for stop in plan.stops if stop.category}
+            if "food" in plan_categories or "dessert" in plan_categories:
+                no_food_reason = "用户不需要餐饮，但方案包含 food/dessert 类 POI。"
+                rejected_routes.append({
+                    "route_id": plan.id,
+                    "reason": no_food_reason,
+                    "rejected_route_reason": no_food_reason,
+                    "score": plan.score,
+                })
+                continue
+
+        explained_plan = mock_experience_copywriter(plan, retrieval, constraints)
+        judgement = mock_route_judge(explained_plan, constraints, profile, weather_constraints)
+        variant_delta = plan.score - primary_score
+        score = max(0, min(100, judgement["score"] + variant_delta))
+        rank_reason = judgement["decision_summary"]
+        if variant_delta < 0:
+            rank_reason = f"{rank_reason} 该方案为了保留不同风格，较主推方案降低 {abs(variant_delta)} 分。"
+
+        scored_plans.append(
+            explained_plan.model_copy(
+                update={
+                    "score": score,
+                    "score_breakdown": {
+                        **judgement["score_breakdown"],
+                        "variant_delta": variant_delta,
+                    },
+                    "rank_reason": rank_reason,
+                },
+                deep=True,
+            )
+        )
+
+    # Sort by score descending
+    scored_plans.sort(key=lambda p: (p.score, -p.total_minutes), reverse=True)
+
+    # Diversity selection: pick top 3 with different style_tags
+    style_map: dict[str, RoutePlan] = {}
+    for summary in (candidate_summaries or []):
+        style_map[summary["id"]] = summary.get("style_tag", "balanced")
+
+    final_plans: list[RoutePlan] = []
+    used_styles: set[str] = set()
+
+    # First pass: pick highest-scored plan per unique style
+    for plan in scored_plans:
+        style = style_map.get(plan.id, "balanced")
+        if style not in used_styles:
+            final_plans.append(plan)
+            used_styles.add(style)
+        if len(final_plans) >= 3:
+            break
+
+    # Second pass: fill remaining slots if not enough unique styles
+    if len(final_plans) < 3:
+        for plan in scored_plans:
+            if plan not in final_plans:
+                final_plans.append(plan)
+            if len(final_plans) >= 3:
+                break
+
+    # Safety net: if all candidates were rejected by hard constraints,
+    # fall back to the highest-scored plan so the user always gets a result.
+    if not final_plans and scored_plans:
+        final_plans.append(scored_plans[0])
+
+    # Reject remaining scored plans that didn't make top 3
+    final_ids = {p.id for p in final_plans}
+    for plan in scored_plans:
+        if plan.id not in final_ids:
+            reject_reason = f"评分 {plan.score} 低于已选方案，且风格与已选方案重叠。"
+            rejected_routes.append({
+                "route_id": plan.id,
+                "reason": reject_reason,
+                "rejected_route_reason": reject_reason,
+                "score": plan.score,
+            })
+
+    evaluation_notes = {
+        "candidates_evaluated": len(candidate_plans),
+        "final_plan_count": len(final_plans),
+        "rejected_count": len(rejected_routes),
+        "selected_styles": list(used_styles),
+        "diversity_enforced": len(used_styles) >= 2,
+    }
+
+    return {
+        "final_plans": final_plans,
+        "rejected_routes": rejected_routes,
+        "evaluation_notes": evaluation_notes,
+    }
+
+
+def mock_route_judge(route: RoutePlan, constraints: list[RouteConstraint], profile: dict, weather_constraints: dict | None = None) -> dict:
+    """Score a route across 10 explainable dimensions.
+
+    Dimensions and max points:
+        hard_constraint  15  – business_hours & booking_readiness satisfied
+        queue            15  – average queue vs user limit
+        business_hours   10  – all stops open during planned arrival
+        traffic           8  – time-of-day traffic suitability
+        weather_fit      10  – weather compatibility (based on actual weather data)
+        preference_fit   12  – user preference tag hits
+        ugc_quality       8  – UGC summary richness
+        route_efficiency 10  – time-window utilization
+        budget            8  – total price vs budget
+        diversity         6  – category coverage
+    """
+    constraint_by_key = {c.key: c for c in constraints}
+
+    # --- hard_constraint (0-15) ---
+    hard_keys = {"business_hours", "booking_readiness"}
+    hard_satisfied = all(
+        constraint_by_key[k].satisfied for k in hard_keys if k in constraint_by_key
+    )
+    hard_constraint_score = 15 if hard_satisfied else 0
+
+    # --- queue (0-15) ---
+    avg_queue = sum(s.queue_minutes or 0 for s in route.stops) / max(len(route.stops), 1)
+    queue_limit = 10 if "低排队" in profile.get("preferences", []) else 15
+    if avg_queue <= 5:
+        queue_score = 15
+    elif avg_queue <= queue_limit:
+        queue_score = 12
+    elif avg_queue <= queue_limit + 5:
+        queue_score = 8
+    else:
+        queue_score = 4
+
+    # --- business_hours (0-10) ---
+    bh_constraint = constraint_by_key.get("business_hours")
+    business_hours_score = 10 if (bh_constraint and bh_constraint.satisfied) else 0
+
+    # --- traffic (0-8) ---
+    traffic_score = 6  # default moderate
+    time_window = profile.get("time_window", "14:00-18:30")
+    if "17:00" in time_window or "18:00" in time_window:
+        traffic_score = 4  # rush hour penalty
+
+    # --- weather_fit (0-10) ---
+    outdoor_categories = {"entertainment"}
+    indoor_categories = {"food", "culture", "shopping", "dessert"}
+    high_precipitation = weather_constraints.get("high_precipitation", False) if weather_constraints else False
+    extreme_temperature = weather_constraints.get("extreme_temperature", False) if weather_constraints else False
+    good_weather = weather_constraints.get("good_weather", False) if weather_constraints else False
+
+    has_outdoor_stop = any(s.category in outdoor_categories for s in route.stops)
+    all_indoor = all(s.category in indoor_categories for s in route.stops if s.category)
+
+    if high_precipitation and has_outdoor_stop:
+        weather_fit_score = 2 if not all_indoor else 4
+    elif high_precipitation and all_indoor:
+        weather_fit_score = 8
+    elif extreme_temperature and has_outdoor_stop:
+        weather_fit_score = 4
+    elif good_weather:
+        weather_fit_score = 9 if has_outdoor_stop else 7
+    else:
+        weather_fit_score = 7
+
+    # --- preference_fit (0-12) ---
+    preference_hits = set()
+    for stop in route.stops:
+        for tag in (stop.tags or []):
+            for pref in profile.get("preferences", []):
+                if pref in tag or tag in pref:
+                    preference_hits.add(pref)
+    hit_count = len(preference_hits)
+    if hit_count >= 3:
+        preference_fit_score = 12
+    elif hit_count == 2:
+        preference_fit_score = 9
+    elif hit_count == 1:
+        preference_fit_score = 6
+    else:
+        preference_fit_score = 3
+
+    # --- ugc_quality (0-8) ---
+    ugc_present = sum(1 for s in route.stops if s.ugc_summary)
+    ugc_ratio = ugc_present / max(len(route.stops), 1)
+    if ugc_ratio >= 0.9:
+        ugc_quality_score = 8
+    elif ugc_ratio >= 0.6:
+        ugc_quality_score = 6
+    else:
+        ugc_quality_score = 4
+
+    # --- route_efficiency (0-10) ---
+    total_minutes = route.total_minutes
+    try:
+        parts = time_window.split("-")
+        start_h, start_m = parts[0].strip().split(":")
+        end_h, end_m = parts[1].strip().split(":")
+        available = (int(end_h) * 60 + int(end_m)) - (int(start_h) * 60 + int(start_m))
+    except (ValueError, IndexError):
+        available = 270
+    utilization = total_minutes / max(available, 1)
+    if 0.55 <= utilization <= 0.85:
+        route_efficiency_score = 10
+    elif 0.4 <= utilization <= 0.95:
+        route_efficiency_score = 7
+    else:
+        route_efficiency_score = 4
+
+    # --- budget (0-8) ---
+    total_price = sum(s.avg_price or 0 for s in route.stops)
+    budget_limit = profile.get("budget_per_person", 300)
+    if total_price <= budget_limit:
+        budget_score = 8
+    elif total_price <= budget_limit * 1.2:
+        budget_score = 5
+    else:
+        budget_score = 2
+
+    # --- diversity (0-6) ---
+    categories = {s.category for s in route.stops if s.category}
+    if len(categories) >= 3:
+        diversity_score = 6
+    elif len(categories) == 2:
+        diversity_score = 4
+    else:
+        diversity_score = 2
+
+    score_breakdown = {
+        "hard_constraint": hard_constraint_score,
+        "queue": queue_score,
+        "business_hours": business_hours_score,
+        "traffic": traffic_score,
+        "weather_fit": weather_fit_score,
+        "preference_fit": preference_fit_score,
+        "ugc_quality": ugc_quality_score,
+        "route_efficiency": route_efficiency_score,
+        "budget": budget_score,
+        "diversity": diversity_score,
+    }
+    score = min(100, sum(score_breakdown.values()))
+
+    # Build decision summary from top-scoring dimensions
+    top_dims = sorted(score_breakdown.items(), key=lambda x: x[1], reverse=True)[:3]
+    dim_labels = {
+        "hard_constraint": "硬约束",
+        "queue": "排队",
+        "business_hours": "营业时间",
+        "traffic": "交通",
+        "weather_fit": "天气适配",
+        "preference_fit": "偏好匹配",
+        "ugc_quality": "UGC 质量",
+        "route_efficiency": "路线效率",
+        "budget": "预算",
+        "diversity": "多样性",
+    }
+    top_summary = "、".join(f"{dim_labels.get(k, k)}{v}" for k, v in top_dims)
+    decision_summary = f"主要加分项：{top_summary}。低排队和类别覆盖是核心优势，适合从一句话到路线的全过程。"
+
     return {
         "score": score,
-        "score_breakdown": {
-            "constraint": constraint_score,
-            "queue": queue_score,
-            "experience": experience_score,
-            "rating": rating_score,
-        },
-        "decision_summary": "低排队约束稳定满足，三类 POI 串联完整，适合 Hackathon Demo 展示从一句话到路线的全过程。",
+        "score_breakdown": score_breakdown,
+        "decision_summary": decision_summary,
         "priority_weights": profile["priority_weights"],
     }
 
@@ -351,15 +690,32 @@ def mock_multi_plan_builder(
     time_window: str = "14:00-18:30",
     group_size: int = 1,
     required_categories: list[str] | None = None,
-) -> list[RoutePlan]:
+    route_matrix: dict | None = None,
+) -> dict:
+    """Generate 5-10 candidate routes, filter by time/route_matrix, and return
+    both the surviving RoutePlan objects and solver metadata.
+
+    Returns:
+        dict with keys:
+        - plans: list[RoutePlan] – surviving candidate plans (5-10 before evaluator)
+        - candidate_plans: list[dict] – lightweight summaries of all candidates
+        - solver_notes: dict – solver metadata for Trace
+        - filtered_out: int – number of candidates removed by feasibility filter
+    """
     pool = retrieval.get("candidate_pool", {})
-    variants = _variant_definitions(required_categories or [stop.category for stop in primary_plan.stops if stop.category])
-    plans = []
-    for variant in variants:
+    categories = required_categories or [stop.category for stop in primary_plan.stops if stop.category]
+    all_variants = _generate_candidate_variants(categories)
+
+    candidate_plans: list[dict] = []
+    plans: list[RoutePlan] = []
+    filtered_out = 0
+
+    for variant in all_variants:
         selected_candidates = []
         fallback_stops = []
         candidate_rank = variant.get("candidate_rank", 0)
         candidate_ranks = variant.get("candidate_ranks", {})
+
         for index, category in enumerate(variant["category_order"]):
             candidates = pool.get(category) or []
             category_rank = candidate_ranks.get(category, candidate_rank)
@@ -377,6 +733,26 @@ def mock_multi_plan_builder(
                 [*fallback_stops, *primary_plan.stops[len(fallback_stops) : 3]],
                 time_window,
             )
+
+        # --- Feasibility filter ---
+        feasible, filter_reason = _check_route_feasibility(
+            stops, total_minutes, time_window, route_matrix, categories,
+        )
+
+        candidate_summary = {
+            "id": variant["id"],
+            "style_tag": variant.get("style_tag", "balanced"),
+            "category_order": variant["category_order"],
+            "candidate_ranks": candidate_ranks,
+            "total_minutes": total_minutes,
+            "feasible": feasible,
+            "filter_reason": filter_reason,
+        }
+        candidate_plans.append(candidate_summary)
+
+        if not feasible:
+            filtered_out += 1
+            continue
 
         plans.append(
             primary_plan.model_copy(
@@ -398,91 +774,238 @@ def mock_multi_plan_builder(
                 deep=True,
             )
         )
-    return plans
+
+    # Ensure at least 3 plans survive for the evaluator
+    if len(plans) < 3:
+        for variant in all_variants:
+            if any(p.id == variant["id"] for p in plans):
+                continue
+            selected_candidates = []
+            candidate_rank = variant.get("candidate_rank", 0)
+            candidate_ranks = variant.get("candidate_ranks", {})
+            for index, category in enumerate(variant["category_order"]):
+                candidates = pool.get(category) or []
+                category_rank = candidate_ranks.get(category, candidate_rank)
+                candidate = candidates[min(category_rank, len(candidates) - 1)] if candidates else None
+                if candidate:
+                    selected_candidates.append(candidate)
+            if len(selected_candidates) == 3:
+                stops, total_minutes = _scheduled_stops_for_candidates(selected_candidates, time_window, group_size)
+                plans.append(
+                    primary_plan.model_copy(
+                        update={
+                            "id": variant["id"],
+                            "title": variant["title"],
+                            "subtitle": variant["subtitle"],
+                            "theme": variant["theme"],
+                            "badge": variant["badge"],
+                            "score": max(0, primary_plan.score + variant["score_delta"]),
+                            "total_minutes": total_minutes,
+                            "stops": stops,
+                            "map_points": _map_points_for(stops),
+                            "transport_summary": "步行 + 短程打车，站点之间不做大跨度移动",
+                            "transports": _default_transports(),
+                            "constraints": constraints,
+                            "todo_items": _todo_items_for_stops(stops),
+                        },
+                        deep=True,
+                    )
+                )
+            if len(plans) >= 3:
+                break
+
+    no_food = "food" not in categories and "dessert" not in categories
+    solver_notes = {
+        "total_candidates_generated": len(all_variants),
+        "candidates_after_filtering": len(plans),
+        "filtered_out": filtered_out,
+        "stop_slots": categories,
+        "no_food_route": no_food,
+        "style_distribution": {},
+    }
+    for cp in candidate_plans:
+        style = cp.get("style_tag", "balanced")
+        solver_notes["style_distribution"][style] = solver_notes["style_distribution"].get(style, 0) + 1
+
+    return {
+        "plans": plans,
+        "candidate_plans": candidate_plans,
+        "solver_notes": solver_notes,
+        "filtered_out": filtered_out,
+    }
+
+
+def _check_route_feasibility(
+    stops: list[RouteStop],
+    total_minutes: int,
+    time_window: str,
+    route_matrix: dict | None,
+    required_categories: list[str],
+) -> tuple[bool, str | None]:
+    """Check whether a candidate route is feasible given time and route_matrix constraints.
+
+    Returns (feasible, filter_reason).  filter_reason is None when feasible.
+    """
+    route_start, route_end = _parse_window_minutes(time_window)
+    available_minutes = route_end - route_start
+
+    # Time window check
+    if total_minutes > available_minutes:
+        return False, f"总时长 {total_minutes} 分钟超出时间窗 {available_minutes} 分钟。"
+
+    # Business hours check – reject if any stop clearly can't fit
+    for stop in stops:
+        if stop.duration_minutes < 15:
+            return False, f"{stop.poi_name} 停留仅 {stop.duration_minutes} 分钟，不可行。"
+
+    # Route matrix distance check – reject if any leg is excessively long
+    if route_matrix and route_matrix.get("legs"):
+        for leg in route_matrix["legs"]:
+            distance = leg.get("distance_meters", 0)
+            if distance > 30000:  # 30 km between consecutive stops is unreasonable
+                return False, f"站点间距离 {distance}m 超过 30km，跨区移动过大。"
+
+    # Category coverage check
+    stop_categories = {stop.category for stop in stops if stop.category}
+    missing = set(required_categories) - stop_categories
+    # Only flag if missing hard categories (food/dessert when user wants food)
+    if missing and not {"food", "dessert"}.issuperset(missing):
+        return False, f"缺少必要类别：{', '.join(missing)}。"
+
+    return True, None
 
 
 def _variant_definitions(required_categories: list[str]) -> list[dict]:
+    """Backward-compatible wrapper: delegates to _generate_candidate_variants
+    and returns only the first 3 entries for callers that still expect 3 variants."""
+    return _generate_candidate_variants(required_categories)[:3]
+
+
+def _generate_candidate_variants(required_categories: list[str]) -> list[dict]:
+    """Generate 5-10 candidate route variant definitions with style tags.
+
+    Each variant specifies a category_order, candidate_ranks (which POI rank
+    to pick from each category), a style_tag for diversity, and display metadata.
+    """
+    no_food = "food" not in required_categories and "dessert" not in required_categories
     base_order = list(dict.fromkeys(required_categories))
-    for fallback_category in ["food", "culture", "dessert", "shopping", "entertainment"]:
+    fallback = ["culture", "shopping", "entertainment"] if no_food else ["food", "culture", "dessert", "shopping", "entertainment"]
+    for cat in fallback:
         if len(base_order) >= 3:
             break
-        if fallback_category not in base_order:
-            base_order.append(fallback_category)
+        if cat not in base_order:
+            base_order.append(cat)
     base_order = base_order[:3]
 
-    if base_order == ["food", "culture", "dessert"]:
-        return [
-            {
-                "id": "route-deterministic-001",
-                "title": "低排队约会路线",
-                "subtitle": "吃饭、看展、甜品顺路串联",
-                "theme": "date-low-queue",
-                "badge": "推荐",
-                "score_delta": 0,
-                "category_order": ["food", "culture", "dessert"],
-                "candidate_rank": 0,
-            },
-            {
-                "id": "route-deterministic-002",
-                "title": "拍照更稳路线",
-                "subtitle": "小众文化点优先，留出更多拍照时间",
-                "theme": "photo-culture",
-                "badge": "好拍",
-                "score_delta": -3,
-                "category_order": ["culture", "dessert", "food"],
-                "candidate_rank": 1,
-                "candidate_ranks": {"food": 2},
-            },
-            {
-                "id": "route-deterministic-003",
-                "title": "松弛甜品收尾路线",
-                "subtitle": "晚一点结束，适合不赶时间",
-                "theme": "dessert-slow",
-                "badge": "松弛",
-                "score_delta": -5,
-                "category_order": ["food", "dessert", "entertainment"],
-                "candidate_rank": 0,
-            },
-        ]
+    variants: list[dict] = []
+    vid = 0
 
-    second_order = [base_order[1], base_order[0], base_order[2]]
-    third_order = [base_order[0], base_order[2], base_order[1]]
-    return [
-        {
-            "id": "route-deterministic-001",
-            "title": "低排队顺路路线",
-            "subtitle": "按你的限制串联三站，避免多余类型",
-            "theme": "constraint-fit",
-            "badge": "推荐",
-            "score_delta": 0,
-            "category_order": base_order,
+    def _add(style_tag: str, category_order: list[str], candidate_ranks: dict[str, int], score_delta: int) -> None:
+        nonlocal vid
+        title, subtitle, theme, badge = _style_display(style_tag, category_order, no_food)
+        variants.append({
+            "id": f"route-candidate-{vid:03d}",
+            "title": title,
+            "subtitle": subtitle,
+            "theme": theme,
+            "badge": badge,
+            "score_delta": score_delta,
+            "category_order": category_order,
             "candidate_rank": 0,
-        },
-        {
-            "id": "route-deterministic-002",
-            "title": "轻松少走路线",
-            "subtitle": "优先把核心体验放在前半段",
-            "theme": "low-effort",
-            "badge": "省心",
-            "score_delta": -3,
-            "category_order": second_order,
-            "candidate_rank": 1,
-        },
-        {
-            "id": "route-deterministic-003",
-            "title": "备选弹性路线",
-            "subtitle": "保留同类候选，方便临场替换",
-            "theme": "fallback-ready",
-            "badge": "备选",
-            "score_delta": -5,
-            "category_order": third_order,
-            "candidate_rank": 0,
-        },
-    ]
+            "candidate_ranks": candidate_ranks,
+            "style_tag": style_tag,
+        })
+        vid += 1
+
+    # 1. Balanced / recommended – base order, top picks
+    _add("balanced", base_order, {}, 0)
+
+    # 2. Low-queue – same order, second-ranked POIs (often less crowded)
+    _add("low_queue", base_order, {cat: 1 for cat in base_order}, -2)
+
+    # 3. Photo / experience-first – culture slot first, prefer photo-friendly POIs
+    photo_order = _reorder_first(base_order, "culture")
+    _add("photo", photo_order, {"culture": 0}, -3)
+
+    # 4. Budget-friendly – prefer cheaper POIs (higher rank = usually cheaper)
+    _add("budget", base_order, {cat: min(2, len(_pool_hint(cat))) for cat in base_order}, -4)
+
+    # 5. Easy-walk – reorder to minimise travel, second pick for shorter distances
+    easy_order = _reorder_first(base_order, base_order[-1])
+    _add("easy_walk", easy_order, {base_order[0]: 1}, -3)
+
+    # 6. Reversed order – different pacing
+    rev_order = list(reversed(base_order))
+    if rev_order != base_order:
+        _add("reversed", rev_order, {}, -5)
+
+    # 7. Alternative picks – mix of first and second choices
+    alt_ranks = {base_order[0]: 1, base_order[1]: 0, base_order[2]: 1} if len(base_order) == 3 else {cat: 1 for cat in base_order}
+    _add("alternative", base_order, alt_ranks, -4)
+
+    # 8. Culture-heavy – culture first, second culture pick if available
+    culture_order = _reorder_first(base_order, "culture") if "culture" in base_order else base_order
+    culture_ranks = {"culture": min(1, len(_pool_hint("culture")) - 1)} if "culture" in base_order else {}
+    _add("culture_heavy", culture_order, culture_ranks, -6)
+
+    return variants
 
 
-def poi_lookup() -> dict[str, MockPoi]:
-    return {poi.id: poi for poi in MOCK_POIS}
+def _style_display(style_tag: str, category_order: list[str], no_food: bool) -> tuple[str, str, str, str]:
+    """Return (title, subtitle, theme, badge) for a given style tag."""
+    category_labels = {"food": "餐饮", "culture": "文化", "dessert": "甜品", "shopping": "购物", "entertainment": "娱乐"}
+    order_text = " + ".join(category_labels.get(c, c) for c in category_order)
+
+    displays: dict[str, tuple[str, str, str, str]] = {
+        "balanced": ("综合推荐路线", f"{order_text}顺路串联", "balanced", "推荐"),
+        "low_queue": ("少排队路线", "优先选择等位短的门店", "low-queue", "少排队"),
+        "photo": ("拍照体验路线", "小众文化点优先，留出更多拍照时间", "photo-culture", "好拍"),
+        "budget": ("预算友好路线", "性价比高的选择，控制人均花费", "budget-friendly", "省钱"),
+        "easy_walk": ("轻松少走路线", "站点紧凑，移动距离短", "easy-walk", "省心"),
+        "reversed": ("倒序弹性路线", "从后往前安排，适合晚出发", "reversed", "弹性"),
+        "alternative": ("备选组合路线", "同类候选搭配，方便临场替换", "alternative", "备选"),
+        "culture_heavy": ("文化深度路线", "文化体验优先，沉浸式安排", "culture-heavy", "深度"),
+    }
+    return displays.get(style_tag, ("本地多 POI 路线", order_text, style_tag, "路线"))
+
+
+def _reorder_first(order: list[str], category: str) -> list[str]:
+    """Move *category* to the front of *order*, keeping relative order of others."""
+    if category not in order:
+        return order
+    result = [category]
+    for c in order:
+        if c != category:
+            result.append(c)
+    return result
+
+
+def _pool_hint(category: str) -> list[str]:
+    """Return a placeholder list whose length hints at pool depth for ranking."""
+    # Real pool sizes are only known at runtime; return a list of 3 to allow
+    # candidate_ranks up to index 2 without IndexError.
+    return [""] * 3
+
+
+def poi_lookup(retrieval: dict | None = None) -> dict[str, MockPoi]:
+    poi_by_id = {poi.id: poi for poi in MOCK_POIS}
+    if not retrieval:
+        return poi_by_id
+
+    candidate_items = list(retrieval.get("candidates", []))
+    for pool_items in retrieval.get("candidate_pool", {}).values():
+        if isinstance(pool_items, list):
+            candidate_items.extend(pool_items)
+
+    for item in candidate_items:
+        if not isinstance(item, dict) or not isinstance(item.get("poi"), dict):
+            continue
+        try:
+            poi = MockPoi(**item["poi"])
+        except (TypeError, ValueError):
+            continue
+        poi_by_id[poi.id] = poi
+    return poi_by_id
 
 
 def _scheduled_stops_for_candidates(

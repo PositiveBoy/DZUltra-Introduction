@@ -65,7 +65,12 @@ class ProviderSettings:
     longcat_base_url: str = os.environ.get("LONGCAT_BASE_URL", "https://api.longcat.chat/openai")
     longcat_model: str = os.environ.get("LONGCAT_MODEL", "LongCat-2.0-Preview")
     llm_request_timeout_seconds: float = float(os.environ.get("DZULTRA_LLM_TIMEOUT_SECONDS", "20"))
+    llm_fast_timeout_seconds: float = float(os.environ.get("DZULTRA_LLM_FAST_TIMEOUT_SECONDS", "2.5"))
+    longcat_backup_retry_enabled: bool = os.environ.get("DZULTRA_LONGCAT_BACKUP_RETRY_ENABLED", "false").lower() == "true"
+    router_skip_llm_confidence: float = float(os.environ.get("DZULTRA_ROUTER_SKIP_LLM_CONFIDENCE", "0.9"))
+    plan_explanation_llm_enabled: bool = os.environ.get("DZULTRA_PLAN_EXPLANATION_LLM_ENABLED", "false").lower() == "true"
     provider_request_timeout_seconds: float = float(os.environ.get("DZULTRA_PROVIDER_TIMEOUT_SECONDS", "8"))
+    provider_fast_timeout_seconds: float = float(os.environ.get("DZULTRA_PROVIDER_FAST_TIMEOUT_SECONDS", "1.2"))
 
     def has_amap(self) -> bool:
         return bool(self.amap_web_service_key)

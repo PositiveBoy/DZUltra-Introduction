@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, maps, mock, profiles, providers, routes, traces
+from app.routers import chat, interactions, maps, mock, profiles, providers, routes, traces
 
 app = FastAPI(
     title="DZUltra API",
@@ -25,6 +25,7 @@ app.include_router(mock.router)
 app.include_router(profiles.router)
 app.include_router(routes.router)
 app.include_router(chat.router)
+app.include_router(interactions.router)
 app.include_router(maps.router)
 app.include_router(providers.router)
 app.include_router(traces.router)

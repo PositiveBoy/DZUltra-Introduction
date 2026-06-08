@@ -14,6 +14,7 @@ const config: Config = {
         dz: {
           yellow: "#ffd84d",
           orange: "#ff8a00",
+          primary: "#FF662B",
           ink: "#171717",
           soft: "#fff7df",
           line: "#ece7dc"

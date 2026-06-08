@@ -92,9 +92,13 @@ GraphNodeKind = Literal["agent", "condition", "wait", "terminal"]
 ProviderCategory = Literal["map", "weather", "llm"]
 
 
+MockUserType = Literal["new", "regular"]
+
+
 class MockUser(BaseModel):
     id: str
     name: str
+    user_type: MockUserType = "regular"
     city: str | None = None
     scenario: str
     default_goal: str | None = None
@@ -128,6 +132,10 @@ class MockPoi(BaseModel):
     id: str
     name: str
     category: PoiCategory
+    source: str = "mock"
+    reliability: dict[str, str] = Field(default_factory=dict)
+    field_reliability: dict[str, ConstraintReliability] = Field(default_factory=dict)
+    enrichment_reliability: dict[str, ConstraintReliability] = Field(default_factory=dict)
     city: str | None = None
     district: str | None = None
     area: str
@@ -412,6 +420,19 @@ class RequirementSummary(BaseModel):
     next_action: str
 
 
+class ConstraintDiscoveryLlmOutput(BaseModel):
+    """Pydantic schema for validating LongCat ConstraintDiscoveryAgent output."""
+
+    requirement_summary: RequirementSummary
+    clarification_cards: list[ClarificationCard] = Field(default_factory=list)
+    constraint_ledger_patch: list[PlanningConstraint] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    grounding_requests: list[str] = Field(
+        default_factory=list,
+        description="List of fact categories that need provider grounding, e.g. weather, poi_search, route_matrix.",
+    )
+
+
 class UserPreference(BaseModel):
     id: str
     label: str
@@ -445,6 +466,16 @@ class PreferenceUpdateRequest(BaseModel):
     label: str
 
 
+class RefinementIntent(BaseModel):
+    """LLM 解析出的微调意图结构。"""
+    type: Literal["local_replace", "local_reorder", "partial_keep", "full_rerun"]
+    target_stop_indices: list[int] = Field(default_factory=list)
+    target_categories: list[str] = Field(default_factory=list)
+    keep_stop_indices: list[int] = Field(default_factory=list)
+    reason: str = ""
+    confidence: float = 0.0
+
+
 class RefinementChange(BaseModel):
     type: Literal["kept", "replaced", "reordered", "updated_copy"]
     stop_index: int | None = None
@@ -457,8 +488,9 @@ class RefinementDiff(BaseModel):
     instruction: str
     base_trace_id: str
     base_route_id: str
-    strategy: Literal["local_replace", "local_reorder", "full_rerun", "copy_update"]
+    strategy: Literal["local_replace", "local_reorder", "partial_keep", "full_rerun", "copy_update"]
     changes: list[RefinementChange] = Field(default_factory=list)
+    refinement_intent: RefinementIntent | None = None
 
 
 class GenerationMetadata(BaseModel):
@@ -548,6 +580,17 @@ class RouteRefineRequest(BaseModel):
     instruction: str
 
 
+class InteractionRequest(BaseModel):
+    user_id: str = "anonymous"
+    message: str
+    city: str = "北京"
+    plan_mode: bool = True
+    interaction_context: InteractionContext | None = None
+    constraints: list[str] = Field(default_factory=list)
+    clarification_answers: dict[str, Any] = Field(default_factory=dict)
+    preference_detection_enabled: bool = True
+
+
 class RoutePlanResponse(BaseModel):
     trace_id: str
     plan: RoutePlan
@@ -579,7 +622,30 @@ class ChatResponse(BaseModel):
     can_convert_to_plan: bool = True
     used_preferences: list[str] = Field(default_factory=list)
     interaction_type: InteractionType = "chat_answer"
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    poi_provider: str = "mock_poi_search"
+    answer_provider: str = "template"
     trace: AgentTrace
+
+
+class InteractionRoutingResult(BaseModel):
+    interaction_type: InteractionType
+    intent_kind: IntentKind
+    confidence: float = Field(default=0.82, ge=0, le=1)
+    routing_reason: str
+    needs_followup: bool = False
+
+
+class InteractionResponse(BaseModel):
+    interaction_type: InteractionType
+    trace_id: str
+    trace: AgentTrace
+    routing: InteractionRoutingResult
+    chat: ChatResponse | None = None
+    route_plan: RoutePlanResponse | None = None
+    refinement: RoutePlanResponse | None = None
+    selection: dict[str, Any] = Field(default_factory=dict)
 
 
 class GeocodeRequest(BaseModel):
@@ -621,6 +687,7 @@ class StaticPreviewResponse(BaseModel):
 
 
 class GenerateUserRequest(BaseModel):
+    user_type: MockUserType = "regular"
     scenario: str = "周六下午本地约会路线"
     city: str = "北京"
 

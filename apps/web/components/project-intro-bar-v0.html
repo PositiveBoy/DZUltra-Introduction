@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DZUltra Intro Bar v0 - Two Styles</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    :root {
+      /* 共享 Token */
+      --dz-primary: #FF662B;
+      --dz-orange: #ff8a00;
+      --dz-yellow: #ffd84d;
+      --dz-ink: #171717;
+      --dz-soft: #fff7df;
+      --dz-line: #ece7dc;
+      --dz-bg: #f7f4ed;
+
+      /* 风格一：暖调杂志风 */
+      --v1-bg: #f7f4ed;
+      --v1-card: #ffffff;
+      --v1-card-border: #ece7dc;
+      --v1-text: #171717;
+      --v1-text-secondary: #6b6560;
+      --v1-accent: #FF662B;
+      --v1-glow: rgba(255, 102, 43, 0.12);
+
+      /* 风格二：深色沉浸风 */
+      --v2-bg: #0f172a;
+      --v2-card: rgba(30, 41, 59, 0.72);
+      --v2-card-border: rgba(255, 255, 255, 0.08);
+      --v2-text: #f8fafc;
+      --v2-text-secondary: #94a3b8;
+      --v2-accent: #ff8a00;
+      --v2-glow: rgba(255, 138, 0, 0.25);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+      overflow-x: hidden;
+    }
+
+    /* ========== 风格一：暖调杂志风 ========== */
+    .style-warm {
+      background: var(--v1-bg);
+      min-height: 100vh;
+      padding: 40px 0;
+    }
+    .style-warm .intro-section-title {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--v1-text-secondary);
+      margin-bottom: 24px;
+    }
+    .style-warm .carousel-container {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      padding: 20px 0;
+    }
+    .style-warm .carousel-track {
+      display: flex;
+      gap: 20px;
+      padding: 0 calc(50% - 260px);
+      transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .style-warm .card {
+      flex: 0 0 520px;
+      height: 280px;
+      background: var(--v1-card);
+      border: 1px solid var(--v1-card-border);
+      border-radius: 20px;
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+    }
+    .style-warm .card.active {
+      box-shadow: 0 12px 48px var(--v1-glow), 0 4px 24px rgba(0,0,0,0.06);
+      transform: scale(1);
+      opacity: 1;
+    }
+    .style-warm .card.inactive {
+      transform: scale(0.94);
+      opacity: 0.55;
+      filter: saturate(0.7);
+    }
+    .style-warm .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--dz-primary), var(--dz-yellow));
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .style-warm .card.active::before {
+      opacity: 1;
+    }
+    .style-warm .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .style-warm .card-title-area h3 {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--v1-text);
+      line-height: 1.3;
+      margin-bottom: 8px;
+    }
+    .style-warm .card-title-area p {
+      font-size: 13px;
+      color: var(--v1-text-secondary);
+      line-height: 1.6;
+      max-width: 260px;
+    }
+    .style-warm .card-visual {
+      width: 140px;
+      height: 140px;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .style-warm .card-bottom {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .style-warm .tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 100px;
+      background: var(--dz-soft);
+      color: var(--dz-primary);
+    }
+    .style-warm .hint {
+      font-size: 12px;
+      color: var(--v1-text-secondary);
+    }
+
+    /* 风格一：几何动画 */
+    @keyframes warmChainFlow {
+      0% { stroke-dashoffset: 100; }
+      100% { stroke-dashoffset: 0; }
+    }
+    @keyframes warmPulse {
+      0%, 100% { transform: scale(1); opacity: 0.6; }
+      50% { transform: scale(1.3); opacity: 1; }
+    }
+    @keyframes warmFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    .style-warm .geo-line {
+      stroke: var(--dz-primary);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+    }
+    .style-warm .geo-dot {
+      fill: var(--dz-yellow);
+    }
+    .style-warm .geo-circle {
+      fill: none;
+      stroke: var(--dz-primary);
+      stroke-width: 1.5;
+      opacity: 0.3;
+    }
+
+    /* 风格一：指示器 */
+    .style-warm .indicators {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .style-warm .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dz-line);
+      transition: all 0.3s ease;
+      cursor: pointer;
+      border: none;
+    }
+    .style-warm .dot.active {
+      background: var(--dz-primary);
+      width: 24px;
+      border-radius: 4px;
+    }
+
+    /* ========== 风格二：深色沉浸风 ========== */
+    .style-dark {
+      background: var(--v2-bg);
+      min-height: 100vh;
+      padding: 40px 0;
+    }
+    .style-dark .intro-section-title {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--v2-text-secondary);
+      margin-bottom: 24px;
+    }
+    .style-dark .carousel-container {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      padding: 20px 0;
+    }
+    .style-dark .carousel-track {
+      display: flex;
+      gap: 20px;
+      padding: 0 calc(50% - 260px);
+      transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .style-dark .card {
+      flex: 0 0 520px;
+      height: 280px;
+      background: var(--v2-card);
+      border: 1px solid var(--v2-card-border);
+      border-radius: 20px;
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+      position: relative;
+      overflow: hidden;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+    }
+    .style-dark .card.active {
+      box-shadow: 0 12px 48px var(--v2-glow), 0 0 0 1px rgba(255,138,0,0.15);
+      transform: scale(1);
+      opacity: 1;
+    }
+    .style-dark .card.inactive {
+      transform: scale(0.94);
+      opacity: 0.45;
+      filter: saturate(0.5);
+    }
+    .style-dark .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 20%;
+      right: 20%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--v2-accent), transparent);
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .style-dark .card.active::before {
+      opacity: 1;
+    }
+    .style-dark .card::after {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle at 50% 0%, rgba(255,138,0,0.08), transparent 60%);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .style-dark .card.active::after {
+      opacity: 1;
+    }
+    .style-dark .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .style-dark .card-title-area h3 {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--v2-text);
+      line-height: 1.3;
+      margin-bottom: 8px;
+    }
+    .style-dark .card-title-area p {
+      font-size: 13px;
+      color: var(--v2-text-secondary);
+      line-height: 1.6;
+      max-width: 260px;
+    }
+    .style-dark .card-visual {
+      width: 140px;
+      height: 140px;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .style-dark .card-bottom {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .style-dark .tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 100px;
+      background: rgba(255, 138, 0, 0.12);
+      color: var(--v2-accent);
+      border: 1px solid rgba(255, 138, 0, 0.2);
+    }
+    .style-dark .hint {
+      font-size: 12px;
+      color: var(--v2-text-secondary);
+    }
+
+    /* 风格二：几何动画 */
+    @keyframes darkPulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    @keyframes darkFlow {
+      0% { stroke-dashoffset: 60; }
+      100% { stroke-dashoffset: 0; }
+    }
+    @keyframes darkSpin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .style-dark .geo-line {
+      stroke: var(--v2-accent);
+      stroke-width: 1.5;
+      fill: none;
+      stroke-linecap: round;
+    }
+    .style-dark .geo-dot {
+      fill: var(--v2-accent);
+      filter: drop-shadow(0 0 4px var(--v2-accent));
+    }
+    .style-dark .geo-circle {
+      fill: none;
+      stroke: rgba(255, 138, 0, 0.25);
+      stroke-width: 1;
+    }
+    .style-dark .geo-glow {
+      fill: var(--v2-accent);
+      opacity: 0.15;
+      filter: blur(8px);
+    }
+
+    /* 风格二：指示器 */
+    .style-dark .indicators {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .style-dark .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.15);
+      transition: all 0.3s ease;
+      cursor: pointer;
+      border: none;
+    }
+    .style-dark .dot.active {
+      background: var(--v2-accent);
+      width: 24px;
+      border-radius: 4px;
+      box-shadow: 0 0 8px var(--v2-glow);
+    }
+
+    /* 切换按钮 */
+    .style-toggle {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 100;
+      display: flex;
+      gap: 8px;
+      background: rgba(255,255,255,0.9);
+      backdrop-filter: blur(12px);
+      padding: 6px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+    .style-toggle button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+    .style-toggle button.active {
+      background: var(--dz-primary);
+      color: white;
+    }
+    .style-toggle button:not(.active) {
+      background: transparent;
+      color: var(--dz-ink);
+    }
+    .style-toggle button:not(.active):hover {
+      background: rgba(0,0,0,0.05);
+    }
+
+    /* 拖拽提示 */
+    .drag-hint {
+      text-align: center;
+      font-size: 12px;
+      margin-top: 12px;
+      opacity: 0.5;
+    }
+    .style-warm .drag-hint { color: var(--v1-text-secondary); }
+    .style-dark .drag-hint { color: var(--v2-text-secondary); }
+
+    /* 响应式 */
+    @media (max-width: 640px) {
+      .style-warm .card,
+      .style-dark .card {
+        flex: 0 0 320px;
+        height: 220px;
+        padding: 20px;
+      }
+      .style-warm .carousel-track,
+      .style-dark .carousel-track {
+        padding: 0 calc(50% - 160px);
+      }
+      .style-warm .card-title-area h3,
+      .style-dark .card-title-area h3 {
+        font-size: 16px;
+      }
+      .style-warm .card-visual,
+      .style-dark .card-visual {
+        width: 100px;
+        height: 100px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ========== 几何动画组件 ==========
+
+    // 封面卡视觉：DZ 品牌图形
+    function CoverVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      const color2 = variant === 'warm' ? '#ffd84d' : '#ffb347';
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          <defs>
+            <linearGradient id={`coverGrad-${variant}`} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor={color} />
+              <stop offset="100%" stopColor={color2} />
+            </linearGradient>
+          </defs>
+          {/* 外环 */}
+          <circle cx="70" cy="70" r="56" className="geo-circle" />
+          <circle cx="70" cy="70" r="48" className="geo-circle" style={{ opacity: 0.15 }} />
+          {/* 中心 DZ 抽象 */}
+          <g style={{ animation: isActive ? 'warmFloat 3s ease-in-out infinite' : 'none' }}>
+            <rect x="45" y="50" width="22" height="40" rx="6" fill={`url(#coverGrad-${variant})`} opacity="0.9" />
+            <rect x="73" y="50" width="22" height="40" rx="11" fill={`url(#coverGrad-${variant})`} opacity="0.7" />
+          </g>
+          {/* 环绕点 */}
+          {[0, 60, 120, 180, 240, 300].map((deg, i) => (
+            <circle
+              key={i}
+              cx={70 + 56 * Math.cos((deg * Math.PI) / 180)}
+              cy={70 + 56 * Math.sin((deg * Math.PI) / 180)}
+              r="3"
+              className="geo-dot"
+              style={{ animation: isActive ? `warmPulse 2s ease-in-out ${i * 0.3}s infinite` : 'none' }}
+            />
+          ))}
+        </svg>
+      );
+    }
+
+    // 约束账本视觉：链条
+    function ConstraintVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 链条路径 */}
+          <path
+            d="M 30 70 Q 50 40, 70 70 T 110 70"
+            className="geo-line"
+            strokeDasharray="8 6"
+            style={{ animation: isActive ? 'warmChainFlow 2s linear infinite' : 'none' }}
+          />
+          <path
+            d="M 30 70 Q 50 100, 70 70 T 110 70"
+            className="geo-line"
+            strokeDasharray="8 6"
+            stroke={variant === 'warm' ? '#ffd84d' : '#ffb347'}
+            style={{ animation: isActive ? 'warmChainFlow 2s linear 0.5s infinite' : 'none' }}
+          />
+          {/* 节点 */}
+          {[{x:30,y:70},{x:70,y:70},{x:110,y:70}].map((p, i) => (
+            <g key={i}>
+              <circle cx={p.x} cy={p.y} r="10" fill={color} opacity="0.15" />
+              <circle cx={p.x} cy={p.y} r="5" fill={color} />
+              <text x={p.x} y={p.y + 22} textAnchor="middle" fontSize="9" fill={color} opacity="0.7">
+                {['发现', '落地', '校验'][i]}
+              </text>
+            </g>
+          ))}
+        </svg>
+      );
+    }
+
+    // Agent 协作视觉：节点网络
+    function AgentVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      const nodes = [
+        {x:70,y:35},{x:40,y:60},{x:100,y:60},{x:55,y:95},{x:85,y:95}
+      ];
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 连线 */}
+          {nodes.slice(1).map((n, i) => (
+            <line
+              key={i}
+              x1={nodes[0].x} y1={nodes[0].y}
+              x2={n.x} y2={n.y}
+              className="geo-line"
+              opacity="0.3"
+              strokeWidth="1"
+            />
+          ))}
+          {/* 节点 */}
+          {nodes.map((n, i) => (
+            <g key={i} style={{ animation: isActive ? `warmPulse 2s ease-in-out ${i * 0.2}s infinite` : 'none' }}>
+              <circle cx={n.x} cy={n.y} r="14" fill={color} opacity="0.1" />
+              <circle cx={n.x} cy={n.y} r="7" fill={color} opacity={i === 0 ? 1 : 0.7} />
+            </g>
+          ))}
+          <text x="70" y="130" textAnchor="middle" fontSize="10" fill={color} opacity="0.6">7 Agents</text>
+        </svg>
+      );
+    }
+
+    // 排队预测视觉：时间轴脉冲
+    function QueueVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 时间轴 */}
+          <line x1="20" y1="110" x2="120" y2="110" className="geo-line" opacity="0.3" />
+          {/* 脉冲波 */}
+          {[0, 1, 2].map((i) => (
+            <ellipse
+              key={i}
+              cx="70"
+              cy="70"
+              rx={20 + i * 18}
+              ry={20 + i * 18}
+              className="geo-circle"
+              style={{
+                animation: isActive ? `warmPulse 2s ease-out ${i * 0.4}s infinite` : 'none',
+                transformOrigin: '70px 70px'
+              }}
+            />
+          ))}
+          {/* 中心点 */}
+          <circle cx="70" cy="70" r="10" fill={color} />
+          <circle cx="70" cy="70" r="16" fill={color} opacity="0.2" style={{ animation: isActive ? 'warmPulse 1.5s ease-in-out infinite' : 'none' }} />
+          {/* 时间刻度 */}
+          {['14:00', '15:00', '16:00'].map((t, i) => (
+            <text key={i} x={30 + i * 40} y="125" textAnchor="middle" fontSize="9" fill={color} opacity="0.5">{t}</text>
+          ))}
+        </svg>
+      );
+    }
+
+    // 天气交通视觉：天气+交通
+    function WeatherVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      const color2 = variant === 'warm' ? '#56A4F0' : '#60a5fa';
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 云 */}
+          <g style={{ animation: isActive ? 'warmFloat 4s ease-in-out infinite' : 'none' }}>
+            <ellipse cx="55" cy="55" rx="22" ry="14" fill={color2} opacity="0.2" />
+            <ellipse cx="70" cy="48" rx="18" ry="12" fill={color2} opacity="0.15" />
+          </g>
+          {/* 雨滴 */}
+          {[45, 60, 75].map((x, i) => (
+            <line
+              key={i}
+              x1={x} y1="65" x2={x - 3} y2="78"
+              stroke={color2}
+              strokeWidth="2"
+              strokeLinecap="round"
+              opacity="0.5"
+              style={{ animation: isActive ? `warmPulse 1.5s ease-in-out ${i * 0.2}s infinite` : 'none' }}
+            />
+          ))}
+          {/* 交通方式 */}
+          {[
+            {x: 35, y: 105, label: '地铁'},
+            {x: 70, y: 105, label: '驾车'},
+            {x: 105, y: 105, label: '骑行'}
+          ].map((item, i) => (
+            <g key={i}>
+              <circle cx={item.x} cy={item.y} r="12" fill={color} opacity={i === 1 ? 0.9 : 0.2} />
+              <text x={item.x} y={item.y + 22} textAnchor="middle" fontSize="8" fill={color} opacity="0.7">{item.label}</text>
+            </g>
+          ))}
+          {/* 箭头 */}
+          <path d="M 50 105 L 60 105" stroke={color} strokeWidth="1.5" markerEnd="url(#arrow)" opacity="0.4" />
+        </svg>
+      );
+    }
+
+    // 偏好学习视觉：进化
+    function PreferenceVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 成长曲线 */}
+          <path
+            d="M 20 100 Q 50 100, 60 80 T 90 50 T 120 30"
+            className="geo-line"
+            strokeWidth="2"
+            style={{ animation: isActive ? 'warmChainFlow 3s linear infinite' : 'none' }}
+            strokeDasharray="4 4"
+          />
+          {/* 阶段节点 */}
+          {[
+            {x: 25, y: 98, label: '输入'},
+            {x: 60, y: 80, label: '选择'},
+            {x: 90, y: 50, label: '微调'},
+            {x: 120, y: 30, label: '学习'}
+          ].map((p, i) => (
+            <g key={i} style={{ animation: isActive ? `warmPulse 2s ease-in-out ${i * 0.3}s infinite` : 'none' }}>
+              <circle cx={p.x} cy={p.y} r="8" fill={color} opacity={0.15 + i * 0.2} />
+              <circle cx={p.x} cy={p.y} r="4" fill={color} />
+              <text x={p.x} y={p.y + 18} textAnchor="middle" fontSize="8" fill={color} opacity="0.6">{p.label}</text>
+            </g>
+          ))}
+        </svg>
+      );
+    }
+
+    // 可解释推荐视觉：雷达图
+    function ExplainVisual({ isActive, variant }) {
+      const color = variant === 'warm' ? '#FF662B' : '#ff8a00';
+      const points = [
+        {x:70,y:25},{x:105,y:50},{x:92,y:95},{x:48,y:95},{x:35,y:50}
+      ];
+      const data = [0.9, 0.75, 0.85, 0.7, 0.95];
+      const dataPoints = points.map((p, i) => ({
+        x: 70 + (p.x - 70) * data[i],
+        y: 70 + (p.y - 70) * data[i]
+      }));
+      const pathD = dataPoints.map((p, i) => (i === 0 ? 'M' : 'L') + ` ${p.x} ${p.y}`).join(' ') + ' Z';
+
+      return (
+        <svg viewBox="0 0 140 140" width="140" height="140">
+          {/* 网格 */}
+          {[0.4, 0.7, 1].map((scale, i) => (
+            <polygon
+              key={i}
+              points={points.map(p => `${70 + (p.x - 70) * scale},${70 + (p.y - 70) * scale}`).join(' ')}
+              className="geo-circle"
+              opacity={0.1 + i * 0.05}
+            />
+          ))}
+          {/* 轴线 */}
+          {points.map((p, i) => (
+            <line key={i} x1="70" y1="70" x2={p.x} y2={p.y} className="geo-line" opacity="0.15" strokeWidth="1" />
+          ))}
+          {/* 数据面 */}
+          <path d={pathD} fill={color} opacity="0.2" stroke={color} strokeWidth="1.5" style={{ animation: isActive ? 'warmPulse 3s ease-in-out infinite' : 'none' }} />
+          {/* 数据点 */}
+          {dataPoints.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r="4" fill={color} />
+          ))}
+        </svg>
+      );
+    }
+
+    // ========== 卡片数据 ==========
+    const cards = [
+      {
+        id: 'cover',
+        title: 'DZUltra',
+        subtitle: '点仔 Ultra',
+        desc: '懂约束、会追问的路线助手。面向大众点评的 AI 本地路线智能规划升级方案。',
+        tag: '美团 2026 AI Hackathon',
+        hint: '作者：周鸿铭、王涵琪',
+        Visual: CoverVisual
+      },
+      {
+        id: 'constraint',
+        title: '约束账本',
+        desc: '所有推荐围绕约束发现 → 落地 → 校验 → 解释，每条约束可追溯来源和可信度。',
+        tag: '架构创新',
+        hint: '约束驱动推荐',
+        Visual: ConstraintVisual
+      },
+      {
+        id: 'agent',
+        title: '7 Agent 协作',
+        desc: 'LLM 负责理解和表达，工具负责事实和约束，主链路仅 2-3 次 LLM 调用。',
+        tag: '系统架构',
+        hint: 'LangGraph 状态机',
+        Visual: AgentVisual
+      },
+      {
+        id: 'queue',
+        title: '排队预测',
+        desc: '结合到达时间预测等位，排队超阈值自动降权或排除，让约会不等待。',
+        tag: '数据智能',
+        hint: '时间感知调度',
+        Visual: QueueVisual
+      },
+      {
+        id: 'weather',
+        title: '天气 / 交通感知',
+        desc: '降水概率 > 60% 优先室内路线，4 种交通方式实时对比推荐。',
+        tag: '环境感知',
+        hint: '多模态约束',
+        Visual: WeatherVisual
+      },
+      {
+        id: 'preference',
+        title: '偏好持续学习',
+        desc: '从输入、选择、微调中检测偏好，置信度 + 来源追踪 + 持久化记忆。',
+        tag: '个性化',
+        hint: '越用越懂你',
+        Visual: PreferenceVisual
+      },
+      {
+        id: 'explain',
+        title: '可解释推荐',
+        desc: '每个方案和每个 POI 都有推荐理由、排除理由和评分拆解，拒绝黑盒。',
+        tag: '透明度',
+        hint: 'Debug Trace 回放',
+        Visual: ExplainVisual
+      }
+    ];
+
+    // ========== 轮播组件 ==========
+    function Carousel({ variant }) {
+      const [current, setCurrent] = useState(0);
+      const [isDragging, setIsDragging] = useState(false);
+      const [startX, setStartX] = useState(0);
+      const [translateX, setTranslateX] = useState(0);
+      const containerRef = useRef(null);
+      const cardWidth = 520;
+      const gap = 20;
+
+      const goTo = useCallback((index) => {
+        setCurrent(Math.max(0, Math.min(cards.length - 1, index)));
+      }, []);
+
+      const handleMouseDown = (e) => {
+        setIsDragging(true);
+        setStartX(e.clientX);
+      };
+
+      const handleMouseMove = (e) => {
+        if (!isDragging) return;
+        const diff = e.clientX - startX;
+        setTranslateX(diff);
+      };
+
+      const handleMouseUp = () => {
+        if (!isDragging) return;
+        setIsDragging(false);
+        if (translateX < -80) {
+          goTo(current + 1);
+        } else if (translateX > 80) {
+          goTo(current - 1);
+        }
+        setTranslateX(0);
+      };
+
+      // 触摸支持
+      const handleTouchStart = (e) => {
+        setIsDragging(true);
+        setStartX(e.touches[0].clientX);
+      };
+
+      const handleTouchMove = (e) => {
+        if (!isDragging) return;
+        const diff = e.touches[0].clientX - startX;
+        setTranslateX(diff);
+      };
+
+      const handleTouchEnd = () => {
+        if (!isDragging) return;
+        setIsDragging(false);
+        if (translateX < -50) {
+          goTo(current + 1);
+        } else if (translateX > 50) {
+          goTo(current - 1);
+        }
+        setTranslateX(0);
+      };
+
+      // 滚轮支持
+      useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        const handleWheel = (e) => {
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+            e.preventDefault();
+            if (e.deltaX > 30) goTo(current + 1);
+            if (e.deltaX < -30) goTo(current - 1);
+          }
+        };
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheel);
+      }, [current, goTo]);
+
+      const offset = -current * (cardWidth + gap) + translateX;
+
+      return (
+        <div className={variant === 'warm' ? 'style-warm' : 'style-dark'}>
+          <div className="intro-section-title">
+            {variant === 'warm' ? 'Style 01 — 暖调杂志风' : 'Style 02 — 深色沉浸风'}
+          </div>
+
+          <div
+            className="carousel-container"
+            ref={containerRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+          >
+            <div
+              className="carousel-track"
+              style={{
+                transform: `translateX(${offset}px)`,
+                transition: isDragging ? 'none' : 'transform 0.5s cubic-bezier(0.22, 1, 0.36, 1)'
+              }}
+            >
+              {cards.map((card, index) => {
+                const isActive = index === current;
+                return (
+                  <div
+                    key={card.id}
+                    className={`card ${isActive ? 'active' : 'inactive'}`}
+                    onClick={() => goTo(index)}
+                  >
+                    <div className="card-top">
+                      <div className="card-title-area">
+                        {card.subtitle && (
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: variant === 'warm' ? '#FF662B' : '#ff8a00', marginBottom: '4px', letterSpacing: '0.05em' }}>
+                            {card.subtitle}
+                          </div>
+                        )}
+                        <h3>{card.title}</h3>
+                        <p>{card.desc}</p>
+                      </div>
+                      <div className="card-visual">
+                        <card.Visual isActive={isActive} variant={variant} />
+                      </div>
+                    </div>
+                    <div className="card-bottom">
+                      <span className="tag">{card.tag}</span>
+                      <span className="hint">{card.hint}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="indicators">
+            {cards.map((_, index) => (
+              <button
+                key={index}
+                className={`dot ${index === current ? 'active' : ''}`}
+                onClick={() => goTo(index)}
+                aria-label={`Go to slide ${index + 1}`}
+              />
+            ))}
+          </div>
+
+          <div className="drag-hint">
+            ← 拖拽或滑动切换卡片 →
+          </div>
+        </div>
+      );
+    }
+
+    // ========== 主应用 ==========
+    function App() {
+      const [activeStyle, setActiveStyle] = useState('warm');
+
+      return (
+        <div>
+          <div className="style-toggle">
+            <button
+              className={activeStyle === 'warm' ? 'active' : ''}
+              onClick={() => setActiveStyle('warm')}
+            >
+              暖调杂志风
+            </button>
+            <button
+              className={activeStyle === 'dark' ? 'active' : ''}
+              onClick={() => setActiveStyle('dark')}
+            >
+              深色沉浸风
+            </button>
+          </div>
+
+          <Carousel variant={activeStyle} />
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

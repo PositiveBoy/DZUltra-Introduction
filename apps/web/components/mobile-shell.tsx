@@ -16,26 +16,27 @@ import {
   Plus,
   ShoppingBag,
   Sparkles,
-  Star,
   Share2,
   Ticket,
   X
 } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useMutation } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode, UIEvent } from "react";
 import { Swiper, SwiperSlide } from "swiper/react";
 import type { Swiper as SwiperInstance } from "swiper";
 import "swiper/css";
 import {
   agentSteps,
-  apiErrorReason,
+  chatRespond,
   createLocalChatTrace,
   createLocalFallbackTrace,
   createLocalRefinementTrace,
   deleteUserPreferenceOnApi,
   demoRoutePlans,
+  interactRespond,
+  interactRespondStream,
   listUserPreferences,
   planRoute,
   presetPrompts,
@@ -44,31 +45,54 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useDemoStore } from "@/stores/use-demo-store";
-import type { ProviderStatus } from "@/stores/use-demo-store";
 import type {
-  AgentTrace,
   AgentStrategy,
   ApiRoutePlan,
+  ChatResponsePayload,
   ClarificationCard,
   ClarificationState,
   DemoPoiStop,
   DemoRoutePlan,
+  FlowBlockType,
+  InteractionContext,
+  InteractionRequestPayload,
   MobileShellView,
   RefinementDiff,
-  RoutePlanRequestPayload,
   RequirementSummary,
+  TraceEvent,
   TransportMode
 } from "@/types/dzultra";
-import { SvgRouteMap } from "./svg-route-map";
+import { PromptCapsule } from "./prompt-capsule";
+import type { PromptEntry } from "./prompt-capsule";
+import { MobileComposer } from "./mobile-composer";
+import { PlanCard } from "./plan-card";
+import { ExpandedPlanSheet } from "./expanded-plan-sheet";
+import { PlanSkeleton } from "./plan-skeleton";
+
+type PoiHint = {
+  id: string;
+  name: string;
+  category: string;
+  address: string;
+  rating: number;
+  meta: string;
+  reason: string;
+  latitude?: number;
+  longitude?: number;
+  recommendedDishes?: string[];
+  openHours?: string;
+  source?: "amap" | "mock";
+  reliability?: Record<string, string>;
+};
 
 type DirectAnswer = {
   question: string;
   answer: string;
-  poiHints: Array<{
-    name: string;
-    meta: string;
-    reason: string;
-  }>;
+  poiHints: PoiHint[];
+  fallback_used?: boolean;
+  fallback_reason?: string;
+  poi_provider?: string;
+  answer_provider?: string;
 };
 
 type ServiceItem = {
@@ -91,7 +115,7 @@ type EcosystemActionReceipt = {
   status: "ready" | "disabled";
 };
 
-const FLOW_BLOCK_CLASS = "min-h-[620px] scroll-mt-4";
+const FLOW_BLOCK_CLASS = `min-h-[620px] snap-start`;
 
 const defaultClarification: ClarificationState = {
   people: 2,
@@ -122,10 +146,13 @@ export function MobileShell() {
     highlightedStopId,
     completedTodoIds,
     activeTrace,
-    requireRequirementConfirmation,
+    activeAgentStep,
+    activeUserId,
+    activeMockLocation,
     preferenceDetectionEnabled,
     dataAuthorizationEnabled,
     userPreferences,
+    flowBlocks,
     setMobileView,
     setInputMode,
     setSelectedPlanId,
@@ -135,11 +162,19 @@ export function MobileShell() {
     toggleTodo,
     resetMobileDemo,
     setSelectedTraceEventId,
+    setActiveAgentStep,
     setActiveTrace,
+    setActiveTraceMeta,
+    appendTraceEvent,
+    finalizeActiveTrace,
     setCurrentRoutePlans,
     setUserPreferences,
     setActiveView,
-    setProviderStatuses
+    appendFlowBlock,
+    clearFlowBlocks,
+    refinementCount,
+    incrementRefinementCount,
+    resetRefinementCount
   } = useDemoStore();
   const [draft, setDraft] = useState("");
   const [submittedPrompt, setSubmittedPrompt] = useState(presetPrompts[0]);
@@ -148,9 +183,11 @@ export function MobileShell() {
   const [clarificationCardAnswers, setClarificationCardAnswers] = useState<ClarificationCardAnswers>({});
   const [clarificationInputNotice, setClarificationInputNotice] = useState("");
   const [requirementSummary, setRequirementSummary] = useState<RequirementSummary | undefined>();
-  const [plans, setPlans] = useState(demoRoutePlans);
-  const [apiNotice, setApiNotice] = useState("本地 Mock 已就绪");
-  const [directAnswer, setDirectAnswer] = useState<DirectAnswer>(() => createDirectAnswer("附近有营业中的便利店吗"));
+  const [plans, setPlans] = useState<DemoRoutePlan[]>([]);
+  const [apiNotice, setApiNotice] = useState("等待首次 Run");
+  const [refinementToast, setRefinementToast] = useState<string | null>(null);
+  const [directAnswer, setDirectAnswer] = useState<DirectAnswer | undefined>(undefined);
+  const [routePlanningEnabled, setRoutePlanningEnabled] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [voicePressed, setVoicePressed] = useState(false);
   const [flowIndex, setFlowIndex] = useState(0);
@@ -169,6 +206,9 @@ export function MobileShell() {
   const [promptEditDraft, setPromptEditDraft] = useState("");
   const [expandedPlanId, setExpandedPlanId] = useState<string | undefined>();
   const [homeSyncedPlanId, setHomeSyncedPlanId] = useState<string | undefined>();
+  // 追踪是否已进入规划流（running/clarifying/summary/plans/refining/selected），
+  // 一旦进入就保持 PlanningConversationView 挂载，实现内容块累积
+  const [hasEnteredPlanning, setHasEnteredPlanning] = useState(false);
   const flowMainRef = useRef<HTMLElement | null>(null);
   const activePlanRequestIdRef = useRef(0);
   const continuationDelayRef = useRef(0);
@@ -176,6 +216,7 @@ export function MobileShell() {
   const planningMinimumDurationRef = useRef(6400);
   const promptEditorOpenRef = useRef(false);
   const flowIndexFrameRef = useRef<number | undefined>(undefined);
+  const streamAbortRef = useRef<(() => void) | null>(null);
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
   const promptSummary = createPromptSummary(submittedPrompt);
   const runningAgentSteps = useMemo(
@@ -185,7 +226,36 @@ export function MobileShell() {
   const shouldShowPromptSummary =
     !!submittedPrompt.trim() && !["entry", "searching", "start", "settings"].includes(mobileView);
 
-  const planMutation = useMutation({
+  // 本轮所有用户 prompt 条目，用于 PromptCapsule 展开面板
+  const promptEntries: PromptEntry[] = useMemo(() => {
+    const entries: PromptEntry[] = [];
+    if (submittedPrompt.trim()) {
+      entries.push({
+        id: "initial-prompt",
+        text: submittedPrompt,
+        label: "首次输入",
+        scrollTargetSelector: "[data-prompt-anchor]"
+      });
+    }
+    if (hasConfirmedClarification) {
+      entries.push({
+        id: "clarification-supplement",
+        text: `${confirmedClarification.people} 人 · ${confirmedClarification.timeRange} · ${confirmedClarification.food}`,
+        label: "补全信息"
+      });
+    }
+    if (hasConfirmedSummary) {
+      entries.push({
+        id: "preference-confirm",
+        text: `${confirmedClarification.budget} · ${confirmedClarification.taste}`,
+        label: "偏好确认"
+      });
+    }
+    return entries;
+  }, [submittedPrompt, hasConfirmedClarification, hasConfirmedSummary, confirmedClarification]);
+
+  // 旧 mutation 保留作为临时 fallback，当前主链路已统一走 interactionMutation
+  const _planMutation = useMutation({
     mutationFn: planRoute,
     onSuccess: (response, variables) => {
       const applyResponse = () => {
@@ -196,7 +266,6 @@ export function MobileShell() {
         const nextPlans = apiPlans.length ? apiPlans.map(apiPlanToDemoPlan) : [];
         setApiNotice(`API Trace 已生成：${response.trace_id}`);
         setActiveTrace(response.trace);
-        setProviderStatuses(providerStatusesFromTrace(response.trace));
         const responseCards = response.clarification_cards ?? [];
         setDynamicClarificationCards(responseCards);
         setRequirementSummary(response.requirement_summary);
@@ -232,8 +301,9 @@ export function MobileShell() {
         setSelectedTraceEventId(response.trace.events.find((event) => event.type === "tool_called")?.id ?? response.trace.events[0]?.id);
       };
       const elapsed = Date.now() - planningRequestStartedAtRef.current;
-      const minimumDelay = Math.max(0, planningMinimumDurationRef.current - elapsed);
-      const delay = Math.max(continuationDelayRef.current, minimumDelay);
+      // 仅保留极短过渡动效（≤200ms），不再强制等待完整最小时长
+      const animationBudget = Math.max(0, Math.min(200, planningMinimumDurationRef.current - elapsed));
+      const delay = Math.max(continuationDelayRef.current, animationBudget);
       continuationDelayRef.current = 0;
       if (delay > 0) {
         window.setTimeout(applyResponse, delay);
@@ -241,27 +311,25 @@ export function MobileShell() {
       }
       applyResponse();
     },
-    onError: (error, variables) => {
+    onError: (_error, variables) => {
       if (variables.client_request_id !== activePlanRequestIdRef.current || promptEditorOpenRef.current) {
         return;
       }
-      const reason = apiErrorReason(error);
-      const errorDetail = error instanceof Error ? error.message : String(error);
-      setApiNotice(reason === "timeout" ? "真实接口超时，已使用本地 Mock fallback" : "真实接口异常，已使用本地 Mock fallback");
+      setApiNotice("API 未连接，已使用本地 Mock 跑完整流程");
       const elapsed = Date.now() - planningRequestStartedAtRef.current;
-      const fallbackDelay = Math.max(1200, planningMinimumDurationRef.current - elapsed);
+      // fallback 仅保留极短过渡动效
+      const fallbackDelay = Math.max(200, Math.min(400, planningMinimumDurationRef.current - elapsed));
       window.setTimeout(() => {
         if (variables.client_request_id !== activePlanRequestIdRef.current || promptEditorOpenRef.current) {
           return;
         }
         const fallbackPlans = demoRoutePlans;
-        const fallbackTrace = createLocalFallbackTrace(variables.goal, fallbackPlans[0].id, reason, errorDetail);
+        const fallbackTrace = createLocalFallbackTrace(variables.goal, fallbackPlans[0].id);
         setPlans(fallbackPlans);
         setCurrentRoutePlans(fallbackPlans);
         setSelectedPlanId(fallbackPlans[0].id);
         setExpandedStopId(fallbackPlans[0].stops[0]?.poiId);
         setActiveTrace(fallbackTrace);
-        setProviderStatuses(providerStatusesFromTrace(fallbackTrace));
         setActiveView("result");
         setMobileView("plans");
         setSelectedTraceEventId(fallbackTrace.events.find((event) => event.type === "route_scored")?.id ?? fallbackTrace.events.at(-1)?.id);
@@ -269,14 +337,38 @@ export function MobileShell() {
     }
   });
 
-  const refineMutation = useMutation({
+  const _chatMutation = useMutation({
+    mutationFn: chatRespond,
+    onSuccess: (response, variables) => {
+      setDirectAnswer(directAnswerFromChatResponse(variables.message, response));
+      setApiNotice(
+        response.trace.events.some((event) => event.fallback_used)
+          ? "ChatAnswerAgent 已返回；LongCat 或真实 provider 失败的部分已在 Trace 标记 fallback。"
+          : "ChatAnswerAgent 已调用后端完成普通问答，Trace 中可查看候选 POI 和 LLM 调用。"
+      );
+      setActiveTrace(response.trace);
+      setSelectedTraceEventId(
+        response.trace.events.find((event) => event.type === "chat_answered")?.id ??
+          response.trace.events.find((event) => event.type === "candidate_retrieved")?.id ??
+          response.trace.events.at(-1)?.id
+      );
+    },
+    onError: (_error, variables) => {
+      const fallbackTrace = createLocalChatTrace(variables.message);
+      setDirectAnswer({ ...createDirectAnswer(variables.message), fallback_reason: "api_unavailable" });
+      setApiNotice("API 不可用，展示的是本地 Mock 数据。");
+      setActiveTrace(fallbackTrace);
+      setSelectedTraceEventId(fallbackTrace.events.find((event) => event.type === "chat_answered")?.id ?? fallbackTrace.events.at(-1)?.id);
+    }
+  });
+
+  const _refineMutation = useMutation({
     mutationFn: refineRoute,
     onSuccess: (response) => {
       const apiPlans = response.plans?.length ? response.plans : response.plan ? [response.plan] : [];
       const nextPlans = apiPlans.length ? apiPlans.map(apiPlanToDemoPlan) : [];
       setApiNotice("微调接口已返回，当前方案已更新");
       setActiveTrace(response.trace);
-      setProviderStatuses(providerStatusesFromTrace(response.trace));
       if (nextPlans.length) {
         const selectedPlanIdFromApi = response.selected_plan_id ?? response.plan.id;
         const selectedPlanFromApi = nextPlans.find((plan) => plan.id === selectedPlanIdFromApi) ?? nextPlans[0];
@@ -286,6 +378,15 @@ export function MobileShell() {
         setSelectedPlanId(selectedPlanIdFromApi);
         setHighlightedStopId(changedStopId);
         window.setTimeout(() => setHighlightedStopId(undefined), 1200);
+        // 微调成功 Toast
+        const diff = response.refinement_diff;
+        const replacedChange = diff?.changes?.find((c: { type: string }) => c.type === "replaced");
+        if (replacedChange && replacedChange.stop_index !== undefined) {
+          showRefinementToast(`已替换第 ${replacedChange.stop_index + 1} 站`);
+        } else {
+          showRefinementToast("已更新");
+        }
+        incrementRefinementCount();
       }
       setMobileView("plans");
       setSelectedTraceEventId(
@@ -294,17 +395,282 @@ export function MobileShell() {
     },
     onError: () => {
       setApiNotice("微调接口未连接，已用本地 Mock 更新方案");
+      showRefinementToast("修改失败，请重试");
     }
   });
 
+  /**
+   * 处理 interaction response 的通用逻辑，SSE 和 mutation 共用。
+   * SSE 模式下 trace 已通过 appendTraceEvent 逐步渲染，这里只处理 plans/视图切换等。
+   */
+  function applyInteractionResponse(
+    response: { interaction_type: string; trace_id: string; trace: typeof activeTrace; routing: { routing_reason: string }; chat?: ChatResponsePayload | null; route_plan?: { plans?: unknown[]; plan?: { id: string }; clarification_cards?: ClarificationCard[]; requirement_summary?: RequirementSummary; planning_status?: string; selected_plan_id?: string } | null; refinement?: { plans?: unknown[]; plan?: { id: string }; selected_plan_id?: string; refinement_diff?: RefinementDiff } | null },
+    variables: { message: string; preference_detection_enabled?: boolean; user_id?: string }
+  ) {
+    if (promptEditorOpenRef.current) {
+      return;
+    }
+    setApiNotice(`API Trace 已生成：${response.trace_id}（分流：${response.routing?.routing_reason ?? ""}）`);
+
+    if (variables.preference_detection_enabled && variables.user_id && variables.user_id !== "anonymous") {
+      window.setTimeout(() => {
+        void syncUserPreferencesFromApi(variables.user_id!);
+      }, 300);
+    }
+
+    const interactionType = response.interaction_type;
+    const traceEvents = response.trace?.events ?? [];
+
+    // chat_answer -> answering
+    if (interactionType === "chat_answer" && response.chat) {
+      setDirectAnswer(directAnswerFromChatResponse(variables.message, response.chat));
+      setActiveView("result");
+      setMobileView("answering");
+      setSelectedTraceEventId(
+        traceEvents.find((event) => event.type === "chat_answered")?.id ??
+          traceEvents.find((event) => event.type === "candidate_retrieved")?.id ??
+          traceEvents.at(-1)?.id
+      );
+      return;
+    }
+
+    // needs_clarification -> clarifying
+    if (interactionType === "answer_clarification" || (response.route_plan && response.route_plan.planning_status === "needs_clarification")) {
+      const routeResponse = response.route_plan;
+      const responseCards = routeResponse?.clarification_cards ?? [];
+      setDynamicClarificationCards(responseCards);
+      setRequirementSummary(routeResponse?.requirement_summary);
+      setClarificationCardAnswers(initializeClarificationCardAnswers(responseCards, clarification));
+      setMobileView("clarifying");
+      setSelectedTraceEventId(
+        traceEvents.find((event) => event.type === "clarification_requested")?.id ?? traceEvents.at(-1)?.id
+      );
+      return;
+    }
+
+    // needs_confirmation -> summary
+    if (interactionType === "confirm_requirements" || (response.route_plan && response.route_plan.planning_status === "needs_confirmation")) {
+      const routeResponse = response.route_plan;
+      setDynamicClarificationCards(routeResponse?.clarification_cards ?? []);
+      setRequirementSummary(routeResponse?.requirement_summary);
+      setMobileView("summary");
+      setSelectedTraceEventId(
+        traceEvents.find((event) => event.type === "requirements_summarized")?.id ?? traceEvents.at(-1)?.id
+      );
+      return;
+    }
+
+    // refine_current_plan -> plans/refining
+    if (interactionType === "refine_current_plan" && response.refinement) {
+      const refineResponse = response.refinement;
+      const apiPlans = refineResponse.plans?.length ? refineResponse.plans : refineResponse.plan ? [refineResponse.plan] : [];
+      const nextPlans = apiPlans.length ? (apiPlans as ApiRoutePlan[]).map(apiPlanToDemoPlan) : [];
+      if (nextPlans.length) {
+        const selectedPlanIdFromApi = refineResponse.selected_plan_id ?? refineResponse.plan!.id;
+        const selectedPlanFromApi = nextPlans.find((plan) => plan.id === selectedPlanIdFromApi) ?? nextPlans[0];
+        const changedStopId = getChangedStopIdFromDiff(selectedPlanFromApi, refineResponse.refinement_diff);
+        setPlans(nextPlans);
+        setCurrentRoutePlans(nextPlans);
+        setSelectedPlanId(selectedPlanIdFromApi);
+        setHighlightedStopId(changedStopId);
+        window.setTimeout(() => setHighlightedStopId(undefined), 1200);
+        // 微调成功 Toast
+        const diff = refineResponse.refinement_diff;
+        const replacedChange = diff?.changes?.find((c: { type: string }) => c.type === "replaced");
+        if (replacedChange && replacedChange.stop_index !== undefined) {
+          showRefinementToast(`已替换第 ${replacedChange.stop_index + 1} 站`);
+        } else {
+          showRefinementToast("已更新");
+        }
+        incrementRefinementCount();
+      }
+      setMobileView("plans");
+      setSelectedTraceEventId(
+        traceEvents.find((event) => event.type === "user_refinement_received")?.id ?? traceEvents.at(-1)?.id
+      );
+      return;
+    }
+
+    // new_planning_task / completed planning -> plans
+    if (response.route_plan) {
+      const routeResponse = response.route_plan;
+      const apiPlans = routeResponse.plans?.length ? routeResponse.plans : routeResponse.plan ? [routeResponse.plan] : [];
+      const nextPlans = apiPlans.length ? (apiPlans as ApiRoutePlan[]).map(apiPlanToDemoPlan) : [];
+      const responseCards = routeResponse.clarification_cards ?? [];
+      setDynamicClarificationCards(responseCards);
+      setRequirementSummary(routeResponse.requirement_summary);
+
+      if (nextPlans.length) {
+        setPlans(nextPlans);
+        setCurrentRoutePlans(nextPlans);
+        setSelectedPlanId(routeResponse.selected_plan_id ?? nextPlans[0].id);
+        setExpandedStopId(nextPlans[0].stops[0]?.poiId);
+        setActiveView("result");
+        setMobileView("plans");
+      }
+      setSelectedTraceEventId(
+        traceEvents.find((event) => event.type === "tool_called")?.id ?? traceEvents[0]?.id
+      );
+      return;
+    }
+
+    // fallback: 如果 interaction_type 没有匹配到具体处理，用 trace 的最后一个事件
+    setSelectedTraceEventId(traceEvents.at(-1)?.id);
+  }
+
+  const interactionMutation = useMutation({
+    mutationFn: interactRespond,
+    onSuccess: (response, variables) => {
+      const applyResponse = () => {
+        setActiveTrace(response.trace);
+        applyInteractionResponse(response, variables);
+      };
+
+      const elapsed = Date.now() - planningRequestStartedAtRef.current;
+      // 仅保留极短过渡动效（≤200ms），不再强制等待完整最小时长
+      const animationBudget = Math.max(0, Math.min(200, planningMinimumDurationRef.current - elapsed));
+      const delay = Math.max(continuationDelayRef.current, animationBudget);
+      continuationDelayRef.current = 0;
+      if (delay > 0) {
+        window.setTimeout(applyResponse, delay);
+        return;
+      }
+      applyResponse();
+    },
+    onError: (_error, variables) => {
+      if (promptEditorOpenRef.current) {
+        return;
+      }
+      // 统一交互接口失败时，根据当前上下文 fallback 到旧接口
+      const interactionCtx = variables.interaction_context;
+      const page = interactionCtx?.page;
+
+      // 方案页微调 fallback
+      if (variables.interaction_context?.route_id) {
+        setApiNotice("统一交互接口未连接，已用本地 Mock 更新方案");
+        const traceForRefine = useDemoStore.getState().activeTrace;
+        const { nextPlans, changedStopId } = applyMockRefinement(plans, variables.interaction_context.route_id, variables.message);
+        window.setTimeout(() => {
+          const refinementTrace = createLocalRefinementTrace(traceForRefine, variables.message, variables.interaction_context!.route_id!, changedStopId);
+          setPlans(nextPlans);
+          setCurrentRoutePlans(nextPlans);
+          setHighlightedStopId(changedStopId);
+          setActiveTrace(refinementTrace);
+          setSelectedTraceEventId(
+            refinementTrace.events.find((event) => event.type === "user_refinement_received")?.id ?? refinementTrace.events.at(-1)?.id
+          );
+          setMobileView("plans");
+          setApiNotice(`已按"${variables.message}"更新当前方案`);
+          showRefinementToast("已更新");
+          incrementRefinementCount();
+          window.setTimeout(() => setHighlightedStopId(undefined), 1200);
+        }, 900);
+        return;
+      }
+
+      // 普通问答 fallback（非路线规划上下文）
+      if (page === "searching" || page === "answering") {
+        const fallbackTrace = createLocalChatTrace(variables.message);
+        setDirectAnswer({ ...createDirectAnswer(variables.message), fallback_reason: "api_unavailable" });
+        setApiNotice("API 不可用，展示的是本地 Mock 数据。");
+        setActiveTrace(fallbackTrace);
+        setActiveView("result");
+        setMobileView("answering");
+        setSelectedTraceEventId(fallbackTrace.events.find((event) => event.type === "chat_answered")?.id ?? fallbackTrace.events.at(-1)?.id);
+        return;
+      }
+
+      // 路线规划 fallback
+      setApiNotice("统一交互接口未连接，已使用本地 Mock 跑完整流程");
+      const elapsed = Date.now() - planningRequestStartedAtRef.current;
+      // fallback 仅保留极短过渡动效
+      const fallbackDelay = Math.max(200, Math.min(400, planningMinimumDurationRef.current - elapsed));
+      window.setTimeout(() => {
+        if (promptEditorOpenRef.current) {
+          return;
+        }
+        const fallbackPlans = demoRoutePlans;
+        const fallbackTrace = createLocalFallbackTrace(variables.message, fallbackPlans[0].id);
+        setPlans(fallbackPlans);
+        setCurrentRoutePlans(fallbackPlans);
+        setSelectedPlanId(fallbackPlans[0].id);
+        setExpandedStopId(fallbackPlans[0].stops[0]?.poiId);
+        setActiveTrace(fallbackTrace);
+        setActiveView("result");
+        setMobileView("plans");
+        setSelectedTraceEventId(fallbackTrace.events.find((event) => event.type === "route_scored")?.id ?? fallbackTrace.events.at(-1)?.id);
+      }, fallbackDelay);
+    }
+  });
+
+  // ── 微调 Toast 反馈 ──
+  const showRefinementToast = useCallback((message: string) => {
+    setRefinementToast(message);
+    window.setTimeout(() => setRefinementToast(null), 2000);
+  }, []);
+
   const activeTransport = useMemo(
-    () => selectedPlan.transports.find((item) => item.mode === selectedTransportMode) ?? selectedPlan.transports[0],
+    () => selectedPlan?.transports.find((item) => item.mode === selectedTransportMode) ?? selectedPlan?.transports[0],
     [selectedPlan, selectedTransportMode]
   );
 
   useEffect(() => {
     promptEditorOpenRef.current = promptEditorOpen;
   }, [promptEditorOpen]);
+
+  // ── FlowBlock 追加逻辑 ──
+  // mobileView 变化时，根据当前流程阶段追加对应的内容块。
+  // 块一旦追加就不会被移除，实现"纵向追加"而非"视图替换"。
+  useEffect(() => {
+    const planningViews: MobileShellView[] = ["running", "clarifying", "summary", "plans", "refining", "selected"];
+    if (planningViews.includes(mobileView)) {
+      setHasEnteredPlanning(true);
+    }
+    if (mobileView === "entry" || mobileView === "searching") {
+      setHasEnteredPlanning(false);
+    }
+
+    // 根据 mobileView 和流程状态追加内容块
+    const now = Date.now();
+    const existingTypes = new Set(flowBlocks.map((b) => b.type));
+
+    function appendOnce(id: string, type: FlowBlockType) {
+      if (!flowBlocks.some((b) => b.id === id)) {
+        appendFlowBlock({ id, type, timestamp: now });
+      }
+    }
+
+    if (mobileView === "running" || mobileView === "clarifying" || mobileView === "summary" || mobileView === "plans" || mobileView === "refining" || mobileView === "selected") {
+      // 用户输入块 + Agent 链块：进入规划流时追加
+      appendOnce("fb-user-input", "user_input");
+      appendOnce("fb-agent-chain", "agent_chain");
+    }
+
+    if (mobileView === "clarifying") {
+      appendOnce("fb-clarification", "clarification");
+    }
+
+    // 补全确认后追加 agent_reaction 块
+    if (hasConfirmedClarification && !existingTypes.has("agent_reaction")) {
+      appendOnce("fb-reaction-absorb", "agent_reaction");
+      appendOnce("fb-reaction-retrieve", "agent_reaction");
+      appendOnce("fb-reaction-compose", "agent_reaction");
+    }
+
+    if (mobileView === "summary" || (hasConfirmedSummary && planningViews.includes(mobileView))) {
+      appendOnce("fb-summary", "summary");
+    }
+
+    if ((mobileView === "plans" || mobileView === "refining") && plans.length > 0) {
+      appendOnce("fb-plans", "plans");
+    }
+
+    if (mobileView === "selected") {
+      appendOnce("fb-selected", "selected");
+      appendOnce("fb-todo", "todo");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 需要 flowBlocks 判断去重，但不希望 flowBlocks 变化时重新触发
+  }, [mobileView, hasConfirmedClarification, hasConfirmedSummary, plans.length, appendFlowBlock]);
 
   useEffect(() => {
     return () => {
@@ -402,20 +768,26 @@ export function MobileShell() {
     }
 
     setSubmittedPrompt(goal);
-    startPlanningRequest(goal, {
-      require_confirmation: requireRequirementConfirmation
+    startInteractionRequest(goal, {
+      plan_mode: routePlanningEnabled
     });
   }
 
-  function startPlanningRequest(
-    goal: string,
-    overrides: Partial<RoutePlanRequestPayload> = {},
+  function startInteractionRequest(
+    message: string,
+    overrides: {
+      plan_mode?: boolean;
+      clarification_answers?: Record<string, unknown>;
+      confirmed_requirements?: boolean;
+      interaction_context?: Record<string, unknown>;
+      constraints?: string[];
+    } = {},
     flowOptions: { preserveCurrentFlow?: boolean } = {}
   ) {
     const requestId = activePlanRequestIdRef.current + 1;
     activePlanRequestIdRef.current = requestId;
     planningRequestStartedAtRef.current = Date.now();
-    planningMinimumDurationRef.current = flowOptions.preserveCurrentFlow ? 2600 : 6400;
+    planningMinimumDurationRef.current = flowOptions.preserveCurrentFlow ? 400 : 800;
     setActiveView("planning");
     setDraft("");
     setKeyboardOpen(false);
@@ -423,20 +795,19 @@ export function MobileShell() {
     setApiNotice(flowOptions.preserveCurrentFlow ? "确认信息后继续规划中" : "正在获取基本信息");
     if (!flowOptions.preserveCurrentFlow) {
       setFlowIndex(0);
+      setPlans([]);
+      setCurrentRoutePlans([]);
+      setSelectedPlanId(undefined);
       setConfirmedClarification(defaultClarification);
       setConfirmedClarificationCards([]);
       setConfirmedClarificationCardAnswers({});
       setHasConfirmedClarification(false);
       setHasConfirmedSummary(false);
       setPostClarificationStep(0);
+      clearFlowBlocks();
+      setHasEnteredPlanning(false);
     }
     setActiveTrace(undefined);
-    if (!flowOptions.preserveCurrentFlow) {
-      setCurrentRoutePlans([]);
-      setSelectedPlanId("");
-      setExpandedStopId(undefined);
-      setProviderStatuses([]);
-    }
     setDynamicClarificationCards([]);
     setClarificationCardAnswers({});
     setClarificationInputNotice("");
@@ -444,17 +815,52 @@ export function MobileShell() {
       setRequirementSummary(undefined);
     }
     setSelectedTraceEventId(undefined);
-    planMutation.mutate({
-      client_request_id: requestId,
-      user_id: dataAuthorizationEnabled ? "user-date-001" : "anonymous",
-      goal,
-      city: "北京",
-      constraints: dataAuthorizationEnabled
+
+    // 构造请求 payload
+    const payload: InteractionRequestPayload = {
+      user_id: dataAuthorizationEnabled && activeUserId ? activeUserId : "anonymous",
+      message,
+      city: activeMockLocation?.city ?? "北京",
+      plan_mode: overrides.plan_mode ?? routePlanningEnabled,
+      constraints: overrides.constraints ?? (dataAuthorizationEnabled
         ? Array.from(new Set(["约会", "看展", ...userPreferences.map((preference) => preference.label)]))
-        : ["约会", "看展"],
+        : ["约会", "看展"]),
       preference_detection_enabled: preferenceDetectionEnabled,
-      ...overrides
+      clarification_answers: overrides.clarification_answers,
+      interaction_context: overrides.interaction_context as InteractionContext | undefined
+    };
+
+    // 中断之前的 SSE 流
+    if (streamAbortRef.current) {
+      streamAbortRef.current();
+      streamAbortRef.current = null;
+    }
+
+    // 优先尝试 SSE 流式调用
+    let streamFailed = false;
+    const abort = interactRespondStream(payload, {
+      onTraceMeta: (trace) => {
+        setActiveTraceMeta(trace);
+        setApiNotice("SSE 流式接收中，Agent 逐步推送 Trace events…");
+      },
+      onTraceEvent: (event: TraceEvent) => {
+        appendTraceEvent(event);
+      },
+      onResponseComplete: (response) => {
+        streamAbortRef.current = null;
+        // 复用 interactionMutation 的 onSuccess 逻辑
+        finalizeActiveTrace(response.trace);
+        applyInteractionResponse(response, payload);
+      },
+      onError: () => {
+        if (streamFailed) return;
+        streamFailed = true;
+        streamAbortRef.current = null;
+        // SSE 失败，fallback 到普通 mutation
+        interactionMutation.mutate(payload);
+      }
     });
+    streamAbortRef.current = abort;
   }
 
   async function syncUserPreferencesFromApi(userId: string) {
@@ -468,23 +874,20 @@ export function MobileShell() {
 
   function submitSearchQuestion(question: string) {
     const goal = question.trim() || "帮我规划今天去哪玩";
-    if (isRoutePlanningGoal(goal)) {
-      submitPrompt(goal);
-      return;
-    }
 
-    setActiveView("result");
     setSubmittedPrompt(goal);
-    setDraft("");
-    setKeyboardOpen(false);
-    setDirectAnswer(createDirectAnswer(goal));
-    setMobileView("answering");
-    setFlowIndex(0);
-    setApiNotice("已走快速问答链路：检索附近 POI 后由大模型总结回答");
-    const chatTrace = createLocalChatTrace(goal);
-    setActiveTrace(chatTrace);
-    setProviderStatuses(providerStatusesFromTrace(chatTrace));
-    setSelectedTraceEventId(chatTrace.events.find((event) => event.type === "chat_answered")?.id ?? chatTrace.events.at(-1)?.id);
+    setDirectAnswer({
+      question: goal,
+      answer: routePlanningEnabled ? "正在检索附近 POI 并规划路线…" : "正在检索附近 POI，并交给 ChatAnswerAgent 生成直接回答。",
+      poiHints: []
+    });
+    setApiNotice("正在调用 /interactions/respond：由后端 InteractionRouterAgent 决定分流。");
+
+    startInteractionRequest(goal, {
+      plan_mode: routePlanningEnabled,
+      interaction_context: { page: "searching" },
+      constraints: dataAuthorizationEnabled ? userPreferences.map((preference) => preference.label) : [],
+    });
   }
 
   function confirmClarification() {
@@ -495,9 +898,13 @@ export function MobileShell() {
       setHasConfirmedClarification(true);
       setPostClarificationStep(0);
       continuationDelayRef.current = 1900;
-      startPlanningRequest(submittedPrompt, {
+      startInteractionRequest(submittedPrompt, {
+        plan_mode: true,
         clarification_answers: buildClarificationAnswers(clarification, dynamicClarificationCards, clarificationCardAnswers),
-        require_confirmation: requireRequirementConfirmation
+        interaction_context: {
+          page: "clarifying",
+          trace_id: activeTrace?.id
+        }
       }, { preserveCurrentFlow: true });
       return;
     }
@@ -510,10 +917,13 @@ export function MobileShell() {
 
   function confirmSummary() {
     setHasConfirmedSummary(true);
-    startPlanningRequest(submittedPrompt, {
+    startInteractionRequest(submittedPrompt, {
+      plan_mode: true,
       clarification_answers: buildClarificationAnswers(clarification, dynamicClarificationCards, clarificationCardAnswers),
-      require_confirmation: requireRequirementConfirmation,
-      confirmed_requirements: true
+      interaction_context: {
+        page: "summary",
+        trace_id: activeTrace?.id
+      }
     }, { preserveCurrentFlow: true });
   }
 
@@ -576,13 +986,14 @@ export function MobileShell() {
     setPromptEditorOpen(false);
     setPromptEditDraft("");
     setSubmittedPrompt(nextPrompt);
-    startPlanningRequest(nextPrompt, {
-      require_confirmation: requireRequirementConfirmation
+    startInteractionRequest(nextPrompt, {
+      plan_mode: routePlanningEnabled
     });
   }
 
   function selectPlan(planId: string) {
     setSelectedPlanId(planId);
+    resetRefinementCount();
     const nextPlan = plans.find((plan) => plan.id === planId);
     setExpandedStopId(nextPlan?.stops[0]?.poiId);
     setSelectedTraceEventId(
@@ -601,7 +1012,7 @@ export function MobileShell() {
 
   function refineCurrentPlan(instruction?: string) {
     const text = (instruction ?? draft).trim();
-    if (!text) {
+    if (!text || !selectedPlan) {
       return;
     }
 
@@ -610,32 +1021,31 @@ export function MobileShell() {
     setMobileView("refining");
     setSelectedTraceEventId(activeTrace?.events.find((event) => event.type === "user_refinement_received")?.id ?? "trace-event-012");
     const traceForRefine = useDemoStore.getState().activeTrace;
-    refineMutation.mutate({
-      trace_id: traceForRefine?.id ?? "trace-demo-local",
-      route_id: selectedPlan.id,
-      instruction: text
-    }, {
-      onError: () => {
-        const { nextPlans, changedStopId } = applyMockRefinement(plans, selectedPlan.id, text);
-        window.setTimeout(() => {
-          const refinementTrace = createLocalRefinementTrace(traceForRefine, text, selectedPlan.id, changedStopId);
-          setPlans(nextPlans);
-          setCurrentRoutePlans(nextPlans);
-          setHighlightedStopId(changedStopId);
-          setActiveTrace(refinementTrace);
-          setProviderStatuses(providerStatusesFromTrace(refinementTrace));
-          setSelectedTraceEventId(
-            refinementTrace.events.find((event) => event.type === "user_refinement_received")?.id ?? refinementTrace.events.at(-1)?.id
-          );
-          setMobileView("plans");
-          setApiNotice(`已按“${text}”更新当前方案`);
-          window.setTimeout(() => setHighlightedStopId(undefined), 1200);
-        }, 900);
-      }
+    planningRequestStartedAtRef.current = Date.now();
+    planningMinimumDurationRef.current = 400;
+    // 统一走 /interactions/respond，带上 interaction_context 标明当前方案页
+    interactionMutation.mutate({
+      user_id: dataAuthorizationEnabled && activeUserId ? activeUserId : "anonymous",
+      message: text,
+      city: activeMockLocation?.city ?? "北京",
+      plan_mode: true,
+      interaction_context: {
+        page: "plans",
+        trace_id: traceForRefine?.id,
+        route_id: selectedPlan.id,
+        selected_plan_id: selectedPlan.id
+      },
+      constraints: dataAuthorizationEnabled
+        ? Array.from(new Set(["约会", "看展", ...userPreferences.map((preference) => preference.label)]))
+        : ["约会", "看展"],
+      preference_detection_enabled: preferenceDetectionEnabled
     });
   }
 
   function choosePlan() {
+    if (!selectedPlan) {
+      return;
+    }
     setKeyboardOpen(false);
     setMobileView("selected");
     setHomeSyncedPlanId(selectedPlan.id);
@@ -708,17 +1118,21 @@ export function MobileShell() {
             onBack={() => setMobileView("entry")}
             onUltraEnter={() => submitSearchQuestion(draft || presetPrompts[0])}
             onOpenUltraHome={enterStart}
+            routePlanningEnabled={routePlanningEnabled}
+            onRoutePlanningToggle={() => setRoutePlanningEnabled((enabled) => !enabled)}
           />
         ) : (
           <>
             {mobileView === "start" && <DzAiBackground />}
-            <ShellEdgeGlass />
+            {mobileView !== "start" && <ShellEdgeGlass />}
             <MobileHeader
-              title={mobileView === "selected" ? selectedPlan.title : "点仔 Ultra"}
+              title={mobileView === "selected" && selectedPlan ? selectedPlan.title : "点仔 Ultra"}
               hideLogo={shouldShowPromptSummary}
-              promptSummary={shouldShowPromptSummary ? promptSummary : undefined}
-              onPromptClick={shouldShowPromptSummary ? () => setPromptSheetOpen(true) : undefined}
               onBack={() => {
+                if (expandedPlanId) {
+                  setExpandedPlanId(undefined);
+                  return;
+                }
                 if (mobileView === "start") {
                   setMobileView("entry");
                   return;
@@ -740,64 +1154,88 @@ export function MobileShell() {
               ref={flowMainRef}
               onScroll={(event) => updateFlowIndexFromScroll(event.currentTarget)}
               className={cn(
-                "relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 pb-28 [scrollbar-width:none] [mask-image:linear-gradient(to_bottom,transparent_0,#000_18px,#000_calc(100%_-_28px),transparent_100%)] [&::-webkit-scrollbar]:hidden",
-                mobileView === "start" && "px-[42px] py-0 [mask-image:none]"
+                "absolute inset-0 z-10 overflow-y-auto overscroll-contain px-4 pt-[120px] pb-[100px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden snap-y snap-proximity [&_[data-flow-block]]:scroll-mt-[260px]",
+                mobileView === "start" && "px-[42px] pt-[120px] pb-[100px]"
               )}
+              style={
+                mobileView !== "start"
+                  ? {
+                      maskImage:
+                        "linear-gradient(to bottom, transparent 0%, black var(--dz-mask-fade-top, 18px), black calc(100% - var(--dz-mask-fade-bottom, 28px)), transparent 100%)",
+                      WebkitMaskImage:
+                        "linear-gradient(to bottom, transparent 0%, black var(--dz-mask-fade-top, 18px), black calc(100% - var(--dz-mask-fade-bottom, 28px)), transparent 100%)",
+                      WebkitOverflowScrolling: "touch"
+                    }
+                  : { WebkitOverflowScrolling: "touch" }
+              }
             >
-              <AnimatePresence mode="wait">
-                {mobileView === "start" && (
+              {/* 欢迎页：用户提交后淡出，但不被替换 */}
+              <AnimatePresence>
+                {mobileView === "start" && !hasEnteredPlanning && (
                   <StartView
                     keyboardOpen={keyboardOpen}
                     onSubmit={submitPrompt}
                   />
                 )}
+              </AnimatePresence>
+
+              {/* 普通问答视图 */}
+              <AnimatePresence>
                 {mobileView === "answering" && (
-                  <DirectAnswerView answer={directAnswer} apiNotice={apiNotice} />
-                )}
-                {["running", "clarifying", "summary", "plans", "refining", "selected"].includes(mobileView) && (
-                  <PlanningConversationView
-                    view={mobileView}
-                    prompt={submittedPrompt}
-                    apiNotice={apiNotice}
-                    steps={runningAgentSteps}
-                    clarification={clarification}
-                    confirmedClarification={confirmedClarification}
-                    cards={dynamicClarificationCards}
-                    confirmedCards={confirmedClarificationCards}
-                    cardAnswers={clarificationCardAnswers}
-                    confirmedCardAnswers={confirmedClarificationCardAnswers}
-                    inputNotice={clarificationInputNotice}
-                    hasConfirmedClarification={hasConfirmedClarification}
-                    hasConfirmedSummary={hasConfirmedSummary}
-                    postClarificationStep={postClarificationStep}
-                    runningAgentChainVisible={runningAgentChainVisible}
-                    requirementSummary={requirementSummary}
-                    plans={plans}
-                    selectedPlan={selectedPlan}
-                    highlightedStopId={highlightedStopId}
-                    isRefining={mobileView === "refining"}
-                    expandedPlanId={expandedPlanId}
-                    activeTransport={activeTransport}
-                    selectedTransportMode={selectedTransportMode}
-                    expandedStopId={expandedStopId}
-                    completedTodoIds={completedTodoIds}
-                    onEditPrompt={openPromptEditor}
-                    setClarification={setClarification}
-                    setCardAnswers={setClarificationCardAnswers}
-                    onConfirmClarification={confirmClarification}
-                    onConfirmSummary={confirmSummary}
-                    onExpandPlan={setExpandedPlanId}
-                    onCloseExpandedPlan={() => setExpandedPlanId(undefined)}
-                    onSlideChange={handleSwiperChange}
-                    onSelectPlan={selectPlan}
-                    onQuickRefine={refineCurrentPlan}
-                    onChoose={choosePlan}
-                    setSelectedTransportMode={setSelectedTransportMode}
-                    setExpandedStopId={setExpandedStopId}
-                    toggleTodo={toggleTodo}
-                  />
+                  <DirectAnswerView answer={directAnswer} apiNotice={apiNotice} onConvertToPlan={() => submitSearchQuestion(directAnswer?.question ?? submittedPrompt)} />
                 )}
               </AnimatePresence>
+
+              {/* 规划流内容块：一旦进入就保持挂载，块只追加不替换 */}
+              {hasEnteredPlanning && (
+                <PlanningConversationView
+                  view={mobileView}
+                  prompt={submittedPrompt}
+                  apiNotice={apiNotice}
+                  steps={runningAgentSteps}
+                  activeAgentStep={activeAgentStep}
+                  clarification={clarification}
+                  confirmedClarification={confirmedClarification}
+                  cards={dynamicClarificationCards}
+                  confirmedCards={confirmedClarificationCards}
+                  cardAnswers={clarificationCardAnswers}
+                  confirmedCardAnswers={confirmedClarificationCardAnswers}
+                  inputNotice={clarificationInputNotice}
+                  hasConfirmedClarification={hasConfirmedClarification}
+                  hasConfirmedSummary={hasConfirmedSummary}
+                  postClarificationStep={postClarificationStep}
+                  runningAgentChainVisible={runningAgentChainVisible}
+                  requirementSummary={requirementSummary}
+                  plans={plans}
+                  selectedPlan={selectedPlan}
+                  highlightedStopId={highlightedStopId}
+                  isRefining={mobileView === "refining"}
+                  expandedPlanId={expandedPlanId}
+                  activeTransport={activeTransport}
+                  selectedTransportMode={selectedTransportMode}
+                  expandedStopId={expandedStopId}
+                  completedTodoIds={completedTodoIds}
+                  onEditPrompt={openPromptEditor}
+                  onAgentStepClick={(agentName) => {
+                    setActiveAgentStep(agentName);
+                    const event = activeTrace?.events?.find((e) => e.agent === agentName);
+                    if (event) setSelectedTraceEventId(event.id);
+                  }}
+                  setClarification={setClarification}
+                  setCardAnswers={setClarificationCardAnswers}
+                  onConfirmClarification={confirmClarification}
+                  onConfirmSummary={confirmSummary}
+                  onExpandPlan={setExpandedPlanId}
+                  onCloseExpandedPlan={() => setExpandedPlanId(undefined)}
+                  onSlideChange={handleSwiperChange}
+                  onSelectPlan={selectPlan}
+                  onQuickRefine={refineCurrentPlan}
+                  onChoose={choosePlan}
+                  setSelectedTransportMode={setSelectedTransportMode}
+                  setExpandedStopId={setExpandedStopId}
+                  toggleTodo={toggleTodo}
+                />
+              )}
             </main>
             <AnimatePresence>
               {settingsDrawerOpen && (
@@ -829,6 +1267,14 @@ export function MobileShell() {
                 />
               )}
             </AnimatePresence>
+            <PromptCapsule
+              summary={promptSummary}
+              entries={promptEntries}
+              scrollContainerRef={flowMainRef}
+              topOffset={68}
+              active={shouldShowPromptSummary}
+              onEdit={openPromptEditor}
+            />
             <AnimatePresence>
               {promptSheetOpen && (
                 <PromptSheet
@@ -854,7 +1300,7 @@ export function MobileShell() {
               )}
             </AnimatePresence>
             <FlowPageIndicator
-              hidden={mobileView === "settings"}
+              hidden={mobileView === "settings" || !!expandedPlanId}
               count={flowBlockCount}
               activeIndex={flowIndex}
               onJump={(index) => {
@@ -871,6 +1317,51 @@ export function MobileShell() {
                 target.scrollTo({ top: index * target.clientHeight, behavior: "smooth" });
               }}
             />
+            {/* 方案页底部固定按钮：浮在输入框之上 */}
+            {(mobileView === "plans" || mobileView === "refining") && selectedPlan && !expandedPlanId && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                className="absolute bottom-[72px] left-0 right-0 z-30 px-4"
+              >
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    choosePlan();
+                  }}
+                  className="w-full rounded-full px-4 py-3 text-sm font-semibold text-white shadow-lg backdrop-blur"
+                  style={{ background: "rgba(255, 102, 43, 0.9)", border: "1px solid #FFFFFF", boxShadow: "0px 8px 32px rgba(48, 104, 156, 0.1)" }}
+                >
+                  选用此方案
+                </button>
+              </motion.div>
+            )}
+
+            {/* 微调 Toast 反馈 */}
+            {refinementToast && (
+              <div className="absolute bottom-[72px] left-0 right-0 z-40 flex justify-center pointer-events-none">
+                <div className="rounded-lg bg-black/75 px-4 py-2 text-[13px] leading-5 text-white shadow-lg">
+                  {refinementToast}
+                </div>
+              </div>
+            )}
+
+            {/* 连续微调保护提示 */}
+            {refinementCount >= 5 && (mobileView === "plans" || mobileView === "refining") && (
+              <div className="absolute bottom-[72px] left-0 right-0 z-30 flex justify-center">
+                <button
+                  onClick={() => {
+                    resetRefinementCount();
+                    submitSearchQuestion(submittedPrompt);
+                  }}
+                  className="rounded-lg bg-amber-500/90 px-4 py-2 text-[13px] leading-5 text-white shadow-lg backdrop-blur"
+                >
+                  需要我重新帮你规划吗？
+                </button>
+              </div>
+            )}
+
             <MobileComposer
               view={mobileView}
               draft={draft}
@@ -901,6 +1392,8 @@ export function MobileShell() {
                   setDraft("");
                 }
               }}
+              routePlanningEnabled={routePlanningEnabled}
+              onRoutePlanningToggle={() => setRoutePlanningEnabled((enabled) => !enabled)}
             />
           </>
         )}
@@ -933,16 +1426,13 @@ function scrollFlowBlockIntoView(target: HTMLElement, block?: HTMLElement | null
     return;
   }
 
+  // 计算目标位置：让块顶部对齐到视口 30% 处（中间偏上）
   const targetRect = target.getBoundingClientRect();
   const blockRect = block.getBoundingClientRect();
-  const top = Math.max(0, target.scrollTop + blockRect.top - targetRect.top - 10);
-  target.scrollTop = top;
+  const snapOffset = Math.round(targetRect.height * 0.3);
+  const top = Math.max(0, target.scrollTop + blockRect.top - targetRect.top - snapOffset);
+  // 使用 smooth 滚动，让 CSS snap 自然接管减速和吸附
   target.scrollTo({ top, behavior: "smooth" });
-  window.setTimeout(() => {
-    if (Math.abs(target.scrollTop - top) > 24) {
-      target.scrollTop = top;
-    }
-  }, 280);
 }
 
 function EntryView({
@@ -1281,17 +1771,20 @@ function SearchTransitionView({
   setDraft,
   onBack,
   onUltraEnter,
-  onOpenUltraHome
+  onOpenUltraHome,
+  routePlanningEnabled,
+  onRoutePlanningToggle
 }: {
   draft: string;
   setDraft: (value: string) => void;
   onBack: () => void;
   onUltraEnter: () => void;
   onOpenUltraHome: () => void;
+  routePlanningEnabled: boolean;
+  onRoutePlanningToggle: () => void;
 }) {
   const [isAskMode, setIsAskMode] = useState(false);
   const [askTab, setAskTab] = useState<"try" | "recent">("try");
-  const [routePlanningEnabled, setRoutePlanningEnabled] = useState(true);
   const [swipePull, setSwipePull] = useState(0);
   const swipeStartXRef = useRef<number | null>(null);
   const swipeStartYRef = useRef<number | null>(null);
@@ -1457,7 +1950,7 @@ function SearchTransitionView({
                   type="button"
                   aria-label={routePlanningEnabled ? "路线规划已开启" : "路线规划已关闭"}
                   aria-pressed={routePlanningEnabled}
-                  onClick={() => setRoutePlanningEnabled((enabled) => !enabled)}
+                  onClick={onRoutePlanningToggle}
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.92 }}
@@ -1839,8 +2332,24 @@ function DzAiBackground() {
 function ShellEdgeGlass() {
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-[12] overflow-hidden">
-      <div className="absolute inset-x-0 top-0 h-[172px] bg-gradient-to-b from-white/70 via-white/32 to-transparent backdrop-blur-[12px] [mask-image:linear-gradient(to_bottom,#000_0%,rgba(0,0,0,0.76)_48%,transparent_100%)]" />
-      <div className="absolute inset-x-0 bottom-0 h-[164px] bg-gradient-to-t from-white/76 via-white/34 to-transparent backdrop-blur-[14px] [mask-image:linear-gradient(to_top,#000_0%,rgba(0,0,0,0.74)_48%,transparent_100%)]" />
+      <div
+        className="absolute inset-x-0 top-0 backdrop-blur-[12px]"
+        style={{
+          height: "var(--dz-edge-glass-top, 172px)",
+          background: "linear-gradient(to bottom, rgba(255,255,255,0.82), rgba(255,255,255,0.36) 48%, transparent 100%)",
+          maskImage: "linear-gradient(to bottom, #000 0%, rgba(0,0,0,0.76) 48%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, #000 0%, rgba(0,0,0,0.76) 48%, transparent 100%)"
+        }}
+      />
+      <div
+        className="absolute inset-x-0 bottom-0 backdrop-blur-[14px]"
+        style={{
+          height: "var(--dz-edge-glass-bottom, 164px)",
+          background: "linear-gradient(to top, rgba(255,255,255,0.86), rgba(255,255,255,0.38) 48%, transparent 100%)",
+          maskImage: "linear-gradient(to top, #000 0%, rgba(0,0,0,0.74) 48%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to top, #000 0%, rgba(0,0,0,0.74) 48%, transparent 100%)"
+        }}
+      />
     </div>
   );
 }
@@ -1848,23 +2357,19 @@ function ShellEdgeGlass() {
 function MobileHeader({
   title,
   hideLogo = false,
-  promptSummary,
-  onPromptClick,
   onBack,
   onSettings
 }: {
   title: string;
   hideLogo?: boolean;
-  promptSummary?: string;
-  onPromptClick?: () => void;
   onBack: () => void;
   onSettings?: () => void;
 }) {
+  const prefersReducedMotion = useReducedMotion();
   const showDzLogo = title === "点仔 Ultra";
-  const showPromptSummary = !!promptSummary && !!onPromptClick;
 
   return (
-    <header className="relative z-20 bg-transparent pb-[10px]">
+    <header className="absolute inset-x-0 top-0 z-20 pb-[10px]">
       <DianpingStatusBar />
       <div className="mt-0 grid grid-cols-[44px_1fr_44px] items-start gap-2 px-6">
         <button
@@ -1879,15 +2384,7 @@ function MobileHeader({
           />
         </button>
         <div className="relative flex min-w-0 items-center justify-center">
-          {showPromptSummary ? (
-            <button
-              type="button"
-              onClick={onPromptClick}
-              className="mt-[5px] max-w-full truncate rounded-full border border-white/70 bg-white/62 px-4 py-2 text-center text-xs font-black text-[#20283a] shadow-[0_8px_26px_rgba(32,40,58,0.12)] backdrop-blur-xl"
-            >
-              {promptSummary}
-            </button>
-          ) : showDzLogo ? (
+          {showDzLogo ? (
             <motion.span
               aria-label="问点仔 AI"
               className="mt-[2px] block h-[38px] w-[112px] bg-contain bg-center bg-no-repeat"
@@ -1896,7 +2393,7 @@ function MobileHeader({
                 filter: hideLogo ? "blur(8px)" : "blur(0px)",
                 scale: hideLogo ? 0.96 : 1
               }}
-              transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.34, ease: [0.22, 1, 0.36, 1] }}
               style={{ backgroundImage: "url('/dianping-assets/问点仔AI_Logo.png')" }}
             />
           ) : (
@@ -1944,7 +2441,12 @@ function PromptSheet({
 
   return (
     <motion.div
-      className="absolute inset-0 z-30 bg-white/42 p-6 backdrop-blur-md"
+      className="absolute inset-0 z-30 p-6"
+      style={{
+        background: "var(--dz-blur-panel-overlay, rgba(255, 255, 255, 0.52))",
+        backdropFilter: `blur(var(--dz-blur-panel-radius, 16px))`,
+        WebkitBackdropFilter: `blur(var(--dz-blur-panel-radius, 16px))`
+      }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -2003,19 +2505,39 @@ function PromptEditorOverlay({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
+  const prefersReducedMotion = useReducedMotion();
+  const overlayDuration = prefersReducedMotion ? 0 : 0.22;
+
+  // Escape 键取消编辑
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onCancel();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onCancel]);
+
   return (
     <motion.div
-      className="absolute inset-0 z-40 overflow-hidden bg-white/48 p-5 backdrop-blur-md"
+      className="absolute inset-0 z-40 overflow-hidden p-5"
+      style={{
+        background: "var(--dz-blur-edit-overlay, rgba(255, 255, 255, 0.48))",
+        backdropFilter: `blur(var(--dz-blur-edit-radius, 12px))`,
+        WebkitBackdropFilter: `blur(var(--dz-blur-edit-radius, 12px))`
+      }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      transition={{ duration: overlayDuration }}
       onClick={onCancel}
     >
       <motion.section
         initial={{ y: 18, scale: 0.98 }}
         animate={{ y: 0, scale: 1 }}
         exit={{ y: 12, scale: 0.98 }}
-        transition={{ duration: 0.22 }}
+        transition={{ duration: overlayDuration }}
         onClick={(event) => event.stopPropagation()}
         className="mt-[142px] rounded-[28px] bg-white/94 p-5 shadow-[0_24px_80px_rgba(32,40,58,0.18)] backdrop-blur"
       >
@@ -2058,36 +2580,41 @@ function StartView({
   keyboardOpen: boolean;
   onSubmit: (prompt?: string) => void;
 }) {
+  const prefersReducedMotion = useReducedMotion();
   const promptSamples = [
     "今天下午想在北京约会，不想排队，想吃饭加看展",
     "周末想找一条轻松拍照路线，最好少走路",
     "今晚临时约朋友吃饭，想顺路喝点甜的"
   ];
 
+  // Blur 参数与 CSS 变量 --dz-blur-exit-radius / --dz-blur-exit-duration 对齐
+  const exitBlur = 10;
+  const exitDuration = prefersReducedMotion ? 0 : 0.35;
+
   return (
     <motion.section
       key="start"
       initial={{ opacity: 0, filter: "blur(8px)", y: 16 }}
       animate={{ opacity: 1, filter: "blur(0px)", y: 0 }}
-      exit={{ opacity: 0, filter: "blur(10px)", y: -10 }}
-      transition={{ duration: 0.35 }}
+      exit={{ opacity: 0, filter: `blur(${exitBlur}px)`, y: -10 }}
+      transition={{ duration: exitDuration }}
       className="h-full"
     >
-      <section data-flow-block className="relative min-h-[628px] overflow-visible">
+      <section data-flow-block className="relative min-h-[628px] snap-start overflow-visible">
         <motion.div
           className="absolute left-0 overflow-visible py-1"
-          animate={{ top: keyboardOpen ? 34 : 118 }}
+          animate={{ top: keyboardOpen ? 34 : 140 }}
           transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
         >
           <h1 className="text-[24px] font-semibold leading-[34px] tracking-normal text-black">给你安排去哪玩</h1>
-          <p className="relative mt-1 min-h-[26px] w-[321px] overflow-visible whitespace-nowrap py-[3px] text-[14px] font-normal leading-5 text-[#999999]">
-            <span>说说</span>
+          <p className="relative mt-1 flex min-h-[26px] w-[321px] items-center overflow-visible whitespace-nowrap py-[3px] text-[14px] font-normal leading-5 text-[#999999]">
+            <PromptLineText>说说</PromptLineText>
             <HighlightedWord delay={0.7}>想去哪儿</HighlightedWord>
-            <span>、</span>
+            <PromptLineText>、</PromptLineText>
             <HighlightedWord delay={0.9}>几个人</HighlightedWord>
-            <span>、</span>
+            <PromptLineText>、</PromptLineText>
             <HighlightedWord delay={1.1}>想怎么玩</HighlightedWord>
-            <span>，我来规划</span>
+            <PromptLineText>，我来规划</PromptLineText>
           </p>
         </motion.div>
 
@@ -2121,21 +2648,24 @@ function StartView({
   );
 }
 
+function PromptLineText({ children }: { children: ReactNode }) {
+  return <span className="inline-flex h-5 items-center leading-5">{children}</span>;
+}
+
 function HighlightedWord({ children, delay }: { children: ReactNode; delay: number }) {
   return (
-    <span className="relative inline-block overflow-hidden rounded-[5px] px-[1px] text-[#202020]">
+    <span className="relative inline-flex h-5 items-center overflow-hidden rounded-[5px] px-[1px] leading-5">
       <motion.span
         aria-hidden="true"
-        className="absolute inset-y-[-3px] -left-[70%] z-0 w-[70%] skew-x-[-18deg] bg-gradient-to-r from-transparent via-[#dfe6ff] to-transparent"
-        initial={{ x: 0, opacity: 0 }}
-        animate={{ x: ["0%", "245%"], opacity: [0, 0.9, 0] }}
-        transition={{ delay, duration: 0.78, ease: "easeInOut" }}
+        className="absolute inset-y-0 left-0 z-0 bg-[#fbfb19]/70"
+        initial={{ width: "0%" }}
+        animate={{ width: "100%" }}
+        transition={{ delay, duration: 0.5, ease: "easeOut" }}
       />
       <motion.span
-        className="relative z-10"
-        initial={{ color: "#202020" }}
-        animate={{ color: ["#202020", "#6473c8", "#202020"] }}
-        transition={{ delay: delay + 0.05, duration: 0.72, ease: "easeInOut" }}
+        className="relative z-10 text-[#202020]"
+        animate={{ color: "#332400" }}
+        transition={{ delay, duration: 0.5, ease: "easeOut" }}
       >
         {children}
       </motion.span>
@@ -2180,6 +2710,7 @@ function PlanningConversationView({
   prompt,
   apiNotice,
   steps,
+  activeAgentStep,
   clarification,
   confirmedClarification,
   cards,
@@ -2202,6 +2733,7 @@ function PlanningConversationView({
   expandedStopId,
   completedTodoIds,
   onEditPrompt,
+  onAgentStepClick,
   setClarification,
   setCardAnswers,
   onConfirmClarification,
@@ -2220,6 +2752,7 @@ function PlanningConversationView({
   prompt: string;
   apiNotice: string;
   steps: RunningAgentStep[];
+  activeAgentStep: string | null;
   clarification: ClarificationState;
   confirmedClarification: ClarificationState;
   cards: ClarificationCard[];
@@ -2233,15 +2766,16 @@ function PlanningConversationView({
   runningAgentChainVisible: boolean;
   requirementSummary?: RequirementSummary;
   plans: DemoRoutePlan[];
-  selectedPlan: DemoRoutePlan;
+  selectedPlan?: DemoRoutePlan;
   highlightedStopId?: string;
   isRefining: boolean;
   expandedPlanId?: string;
-  activeTransport: DemoRoutePlan["transports"][number];
+  activeTransport?: DemoRoutePlan["transports"][number];
   selectedTransportMode: TransportMode;
   expandedStopId?: string;
   completedTodoIds: string[];
   onEditPrompt: () => void;
+  onAgentStepClick?: (agentName: string) => void;
   setClarification: (state: ClarificationState) => void;
   setCardAnswers: (state: ClarificationCardAnswers) => void;
   onConfirmClarification: () => void;
@@ -2261,8 +2795,8 @@ function PlanningConversationView({
   const showPostClarification = hasConfirmedClarification && view !== "clarifying";
   const showSummary = view === "summary" || hasConfirmedSummary || view === "plans" || view === "refining" || view === "selected";
   const showPlanGeneration = view === "running" && hasConfirmedSummary;
-  const showPlans = view === "plans" || view === "refining" || view === "selected";
-  const showSelected = view === "selected";
+  const showPlans = (view === "plans" || view === "refining" || view === "selected") && plans.length > 0 && !!selectedPlan;
+  const showSelected = view === "selected" && !!selectedPlan && !!activeTransport;
   const agentIsRunning = view === "running" && !hasConfirmedClarification && !hasConfirmedSummary;
 
   return (
@@ -2278,10 +2812,12 @@ function PlanningConversationView({
         prompt={prompt}
         apiNotice={apiNotice}
         steps={steps}
+        activeAgentStep={activeAgentStep}
         status={agentIsRunning ? "running" : "completed"}
         showAgentChain={agentIsRunning ? runningAgentChainVisible : true}
         autoFocus={view === "running" && !hasConfirmedClarification && !hasConfirmedSummary}
         onEditPrompt={onEditPrompt}
+        onAgentStepClick={onAgentStepClick}
       />
 
       {showLiveClarification && (
@@ -2325,7 +2861,10 @@ function PlanningConversationView({
 
       {showPlanGeneration && <PlanGenerationThinkingView autoFocus />}
 
-      {showPlans && (
+      {/* Skeleton placeholder while plans are generating */}
+      {showPlanGeneration && <PlanSkeleton />}
+
+      {showPlans && selectedPlan && (
         <PlansView
           plans={plans}
           selectedPlan={selectedPlan}
@@ -2343,7 +2882,7 @@ function PlanningConversationView({
         />
       )}
 
-      {showSelected && (
+      {showSelected && selectedPlan && activeTransport && (
         <SelectedPlanView
           plan={selectedPlan}
           activeTransport={activeTransport}
@@ -2364,37 +2903,48 @@ function RunningView({
   prompt,
   apiNotice,
   steps,
+  activeAgentStep,
   status = "running",
   showAgentChain,
   autoFocus = false,
-  onEditPrompt
+  onEditPrompt,
+  onAgentStepClick
 }: {
   prompt: string;
   apiNotice: string;
   steps: RunningAgentStep[];
+  activeAgentStep: string | null;
   status?: "running" | "completed";
   showAgentChain: boolean;
   autoFocus?: boolean;
   onEditPrompt: () => void;
+  onAgentStepClick?: (agentName: string) => void;
 }) {
-  const [activeStep, setActiveStep] = useState(0);
   const [typedPrompt, setTypedPrompt] = useState("");
   const agentBlockRef = useRef<HTMLElement | null>(null);
+
+  // 根据 activeAgentStep 计算当前步骤索引，不再使用 setInterval 假动画
+  const activeStep = useMemo(() => {
+    if (status === "completed") {
+      return Math.max(steps.length - 1, 0);
+    }
+    if (!activeAgentStep) {
+      return -1;
+    }
+    const index = steps.findIndex((s) => s.agent === activeAgentStep);
+    return Math.max(index, 0);
+  }, [activeAgentStep, status, steps]);
+
   const currentStep = steps[Math.min(activeStep, steps.length - 1)] ?? steps[0];
 
+  // 打字机效果保留，与 Agent 进度无关
   useEffect(() => {
     if (status === "completed") {
-      setActiveStep(Math.max(steps.length - 1, 0));
       setTypedPrompt(prompt);
       return;
     }
 
-    setActiveStep(0);
     setTypedPrompt("");
-
-    const stepTimer = window.setInterval(() => {
-      setActiveStep((current) => Math.min(current + 1, steps.length - 1));
-    }, 820);
 
     const characters = Array.from(prompt);
     let characterIndex = 0;
@@ -2407,10 +2957,9 @@ function RunningView({
     }, Math.max(28, Math.min(56, 900 / Math.max(characters.length, 1))));
 
     return () => {
-      window.clearInterval(stepTimer);
       window.clearInterval(typingTimer);
     };
-  }, [prompt, status, steps.length]);
+  }, [prompt, status]);
 
   useEffect(() => {
     if (!showAgentChain || !autoFocus) {
@@ -2428,6 +2977,34 @@ function RunningView({
     return () => window.cancelAnimationFrame(frame);
   }, [autoFocus, showAgentChain]);
 
+  // Agent 步骤变化时，自动滚动到当前步骤
+  useEffect(() => {
+    if (!showAgentChain || status === "completed") {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const block = agentBlockRef.current;
+      const target = block?.closest<HTMLElement>("[data-mobile-flow='true']");
+      if (!target || !block) {
+        return;
+      }
+      // 找到当前步骤的 DOM 元素
+      const stepElements = block.querySelectorAll<HTMLElement>("[data-agent-step]");
+      const currentStepEl = stepElements[activeStep];
+      if (currentStepEl) {
+        // 滚动到当前步骤，让它出现在视口中间偏下
+        const targetRect = target.getBoundingClientRect();
+        const stepRect = currentStepEl.getBoundingClientRect();
+        const offset = Math.round(targetRect.height * 0.45);
+        const top = Math.max(0, target.scrollTop + stepRect.top - targetRect.top - offset);
+        target.scrollTo({ top, behavior: "smooth" });
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeStep, showAgentChain, status]);
+
   const visibleSteps = status === "completed" ? steps : steps.slice(0, Math.min(activeStep + 1, steps.length));
 
   return (
@@ -2441,8 +3018,9 @@ function RunningView({
     >
       <section
         data-flow-block
+        data-prompt-anchor
         data-flow-autofocus={autoFocus && !showAgentChain ? "true" : undefined}
-        className={cn(FLOW_BLOCK_CLASS, "relative flex flex-col justify-center overflow-hidden px-[26px]")}
+        className={cn(FLOW_BLOCK_CLASS, "relative flex flex-col justify-center overflow-hidden px-[26px] pb-[200px]")}
       >
         <motion.div
           key="prompt-typing"
@@ -2471,7 +3049,7 @@ function RunningView({
               {!showAgentChain && (
                 <motion.span
                   aria-hidden="true"
-                  className="absolute inset-y-0 -left-12 w-12 skew-x-[-18deg] bg-gradient-to-r from-transparent via-[#fbfb19]/80 to-transparent"
+                  className="absolute inset-y-0 -left-12 w-12 skew-x-[-18deg] bg-gradient-to-r from-transparent via-white/80 to-transparent"
                   animate={{ x: [0, 260] }}
                   transition={{ repeat: Infinity, duration: 1.25, ease: "easeInOut" }}
                 />
@@ -2487,7 +3065,7 @@ function RunningView({
             ref={agentBlockRef}
             data-flow-block
             data-flow-autofocus={autoFocus ? "true" : undefined}
-            className={cn(FLOW_BLOCK_CLASS, "relative overflow-hidden px-[26px] pt-[84px]")}
+            className={cn(FLOW_BLOCK_CLASS, "relative overflow-hidden px-[26px] pt-[84px] pb-[300px]")}
           >
             <motion.div
               key="agent-chain"
@@ -2501,10 +3079,10 @@ function RunningView({
                 <h2 className="text-[24px] font-semibold leading-[34px] text-black">正在规划中</h2>
                 <div className="mt-1 inline-flex h-5 items-center overflow-hidden text-[14px] leading-5 text-[#999999]">
                   <span className="relative">
-                    稍等一下，我正在思考哦
+                    {activeAgentStep ? "稍等一下，我正在思考哦" : "正在调用后端…"}
                     <motion.span
                       aria-hidden="true"
-                      className="absolute inset-y-0 -left-10 w-10 skew-x-[-18deg] bg-gradient-to-r from-transparent via-[#fbfb19]/75 to-transparent"
+                      className="absolute inset-y-0 -left-10 w-10 skew-x-[-18deg] bg-gradient-to-r from-transparent via-white/75 to-transparent"
                       animate={{ x: [0, 190] }}
                       transition={{ repeat: Infinity, duration: 1.35, ease: "easeInOut" }}
                     />
@@ -2521,11 +3099,13 @@ function RunningView({
                     return (
                       <motion.div
                         key={step.id}
+                        data-agent-step={index}
                         initial={{ opacity: 0, y: 12, filter: "blur(5px)" }}
                         animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
                         exit={{ opacity: 0, y: -8 }}
                         transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-                        className="grid grid-cols-[22px_1fr] gap-3"
+                        className="grid cursor-pointer grid-cols-[22px_1fr] gap-3"
+                        onClick={() => onAgentStepClick?.(step.agent)}
                       >
                         <div className="flex flex-col items-center pt-1">
                           <span
@@ -2571,7 +3151,17 @@ function RunningView({
   );
 }
 
-function DirectAnswerView({ answer, apiNotice }: { answer: DirectAnswer; apiNotice: string }) {
+function DirectAnswerView({ answer, apiNotice, onConvertToPlan }: { answer: DirectAnswer | undefined; apiNotice: string; onConvertToPlan: () => void }) {
+  if (!answer) {
+    return null;
+  }
+
+  const isFallback = answer.fallback_used === true;
+
+  const hasMockedFields = (poi: PoiHint) =>
+    poi.source === "mock" ||
+    (poi.reliability && Object.values(poi.reliability).some((v) => v === "mocked"));
+
   return (
     <motion.section
       key="answering"
@@ -2581,6 +3171,15 @@ function DirectAnswerView({ answer, apiNotice }: { answer: DirectAnswer; apiNoti
       transition={{ duration: 0.3 }}
       className="space-y-4"
     >
+      {/* fallback 全局提示条 */}
+      {isFallback && (
+        <section data-flow-block>
+          <div className="rounded-xl bg-amber-50 px-4 py-3 text-xs font-semibold leading-5 text-amber-700">
+            当前 API 不可用，展示的是本地模拟数据，仅供参考。
+          </div>
+        </section>
+      )}
+
       <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}>
         <p className="text-xs font-semibold text-neutral-500">你的问题</p>
         <h2 className="mt-3 text-2xl font-black leading-9 text-[#20283a]">{answer.question}</h2>
@@ -2588,10 +3187,15 @@ function DirectAnswerView({ answer, apiNotice }: { answer: DirectAnswer; apiNoti
       </section>
 
       <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}>
-        <div className="rounded-3xl bg-white p-5 shadow-sm">
+        <div className={cn("rounded-3xl bg-white p-5 shadow-sm", isFallback && "border-2 border-amber-400")}>
           <div className="mb-3 flex items-center gap-2 text-sm font-black">
             <Sparkles className="h-4 w-4 text-[#4f68ff]" />
             点仔回答
+            {answer.answer_provider && (
+              <span className="ml-auto rounded-full bg-[#eef1ff] px-2 py-0.5 text-[10px] font-semibold text-[#5260c8]">
+                {answer.answer_provider}
+              </span>
+            )}
           </div>
           <p className="text-sm font-semibold leading-7 text-[#20283a]">{answer.answer}</p>
           <p className="mt-4 rounded-2xl bg-[#eef1ff] px-3 py-3 text-xs leading-5 text-[#5260c8]">{apiNotice}</p>
@@ -2601,19 +3205,87 @@ function DirectAnswerView({ answer, apiNotice }: { answer: DirectAnswer; apiNoti
       <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "py-4")}>
         <BlockTitle title="附近可参考 POI" subtitle="快速问答也会检索附近地点，帮助答案落地。" />
         <div className="space-y-3">
-          {answer.poiHints.map((poi) => (
-            <div key={poi.name} className="rounded-2xl bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-black">{poi.name}</h3>
-                  <p className="mt-1 text-xs font-semibold text-dz-orange">{poi.meta}</p>
+          {answer.poiHints.length ? answer.poiHints.map((poi) => {
+            const isMocked = hasMockedFields(poi);
+            const isAmap = poi.source === "amap";
+            return (
+              <div
+                key={poi.id || poi.name}
+                className={cn(
+                  "rounded-2xl bg-white p-4 shadow-sm",
+                  isMocked && "bg-amber-50/40"
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-black">{poi.name}</h3>
+                      {isAmap && (
+                        <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-600">
+                          高德数据
+                        </span>
+                      )}
+                      {isMocked && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-600">
+                          模拟数据
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs font-semibold text-dz-orange">{poi.meta}</p>
+                    {poi.address && (
+                      <p className="mt-1 text-xs leading-4 text-neutral-400">{poi.address}</p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">附近</span>
+                    {poi.rating > 0 && (
+                      <span className="text-[11px] font-bold text-amber-500">{poi.rating} 分</span>
+                    )}
+                  </div>
                 </div>
-                <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">附近</span>
+
+                {/* 推荐菜 */}
+                {poi.recommendedDishes && poi.recommendedDishes.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {poi.recommendedDishes.map((dish) => (
+                      <span key={dish} className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-600">
+                        {dish}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* 营业时间 */}
+                {poi.openHours && (
+                  <p className="mt-2 text-[11px] leading-4 text-neutral-400">
+                    营业时间：{poi.openHours}
+                  </p>
+                )}
+
+                <p className="mt-3 text-xs leading-5 text-neutral-600">{poi.reason}</p>
               </div>
-              <p className="mt-3 text-xs leading-5 text-neutral-600">{poi.reason}</p>
+            );
+          }) : (
+            <div className="flex items-center gap-2 rounded-2xl bg-white p-4 text-xs leading-5 text-neutral-500 shadow-sm">
+              <svg className="h-4 w-4 animate-spin text-neutral-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              正在检索相关地点
             </div>
-          ))}
+          )}
         </div>
+
+        {/* 转为路线规划入口 */}
+        {answer.poiHints.length > 0 && (
+          <button
+            type="button"
+            onClick={onConvertToPlan}
+            className="mt-4 w-full rounded-2xl bg-[#4f68ff] px-4 py-3 text-sm font-bold text-white shadow-sm active:scale-[0.98] transition-transform"
+          >
+            转为路线规划
+          </button>
+        )}
       </section>
     </motion.section>
   );
@@ -3121,15 +3793,12 @@ function PlansView({
   plans,
   selectedPlan,
   highlightedStopId,
-  isRefining,
-  apiNotice,
   expandedPlanId,
   autoFocus = false,
   onExpandPlan,
   onCloseExpandedPlan,
   onSlideChange,
   onSelectPlan,
-  onQuickRefine,
   onChoose
 }: {
   plans: DemoRoutePlan[];
@@ -3158,21 +3827,11 @@ function PlansView({
       exit={{ opacity: 0 }}
       className={cn(FLOW_BLOCK_CLASS, "py-2")}
     >
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <BlockTitle title="给你 3 套方案" subtitle="左右滑动，底部输入会默认微调当前方案。" compact />
-        <span className="mt-1 rounded-full bg-green-50 px-2 py-1 text-[11px] font-bold text-green-700">completed</span>
-      </div>
-
-      <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
-        {["换掉咖啡馆", "更少走路", "把展览提前"].map((label) => (
-          <button
-            key={label}
-            onClick={() => onQuickRefine(label)}
-            className="shrink-0 rounded-full border border-dz-line bg-white px-3 py-2 text-xs font-semibold"
-          >
-            {label}
-          </button>
-        ))}
+      <div className="mb-7 pl-[5px] pr-6">
+        <h2 className="text-[24px] font-semibold leading-[34px] text-black">喜欢哪个方案？</h2>
+        <p className="mt-1 text-[20px] font-normal leading-[28px] text-[#999999]">
+          左右滑动切换方案，哪里不满意？底部输入，我来帮你解决
+        </p>
       </div>
 
       <Swiper slidesPerView={1.08} spaceBetween={12} onSlideChange={onSlideChange} className="!-mx-1 !px-1">
@@ -3190,22 +3849,6 @@ function PlansView({
           </SwiperSlide>
         ))}
       </Swiper>
-
-      <div className="sticky bottom-[92px] z-20 mt-4 rounded-[22px] border border-blue-200 bg-blue-50/90 p-3 backdrop-blur">
-        <div className="mb-2 flex items-center justify-between text-xs text-blue-700">
-          <span>{apiNotice}</span>
-          {isRefining && <span className="font-bold">更新中...</span>}
-        </div>
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            onChoose();
-          }}
-          className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white"
-        >
-          选用此方案
-        </button>
-      </div>
 
       <AnimatePresence>
         {expandedPlan && (
@@ -3233,239 +3876,7 @@ function PlansView({
   );
 }
 
-function PlanCard({
-  plan,
-  active,
-  highlightedStopId,
-  onExpand
-}: {
-  plan: DemoRoutePlan;
-  active: boolean;
-  highlightedStopId?: string;
-  onExpand: () => void;
-}) {
-  const avgQueue = Math.round(plan.stops.reduce((sum, stop) => sum + stop.queueMinutes, 0) / plan.stops.length);
-
-  return (
-    <article
-      onClick={onExpand}
-      className={cn(
-        "min-h-[570px] cursor-pointer rounded-2xl border bg-white p-4 shadow-sm transition active:scale-[0.995]",
-        active ? "border-dz-orange" : "border-dz-line"
-      )}
-    >
-      <div className="sticky top-0 z-10 bg-white/95 pb-3 backdrop-blur">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">{plan.badge}</span>
-          <span className="inline-flex items-center gap-1 text-xs font-bold">
-            <Star className="h-3.5 w-3.5 fill-dz-yellow text-dz-orange" />
-            {plan.score}
-          </span>
-        </div>
-        <h2 className="text-xl font-black tracking-normal">{plan.title}</h2>
-        <p className="mt-1 text-xs text-neutral-500">{plan.subtitle}</p>
-      </div>
-
-      <SvgRouteMap points={plan.mapPoints} tone={plan.mapTone} summary={`平均排队 ${avgQueue} 分钟`} />
-
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {plan.transports.map((transport) => (
-          <div key={transport.mode} className="rounded-xl bg-dz-soft px-2 py-2">
-            <div className="text-[11px] font-bold">{transport.label}</div>
-            <div className="mt-1 text-xs text-neutral-600">{transport.minutes} 分钟</div>
-            <div className="mt-1 truncate text-[11px] text-neutral-500">{transport.cost}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-4 space-y-3">
-        {plan.stops.map((stop, index) => {
-          const isHighlighted = highlightedStopId === stop.poiId;
-
-          return (
-          <motion.div
-            key={stop.poiId}
-            animate={
-              isHighlighted
-                ? {
-                    backgroundColor: ["#ffffff", "#f5f7ff", "#ffffff"],
-                    borderColor: ["#ece7dc", "#cfd8ff", "#ece7dc"],
-                    boxShadow: [
-                      "0 0 0 rgba(79,104,255,0)",
-                      "0 10px 24px rgba(79,104,255,0.12)",
-                      "0 0 0 rgba(79,104,255,0)"
-                    ]
-                  }
-                : {}
-            }
-            transition={{ duration: 1.05, ease: "easeInOut" }}
-            className="rounded-2xl border border-dz-line bg-white p-3"
-          >
-            <div className="flex items-start gap-3">
-              <span className={cn(
-                "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black transition-colors",
-                isHighlighted ? "bg-[#eef1ff] text-[#4f68ff]" : "bg-dz-yellow text-[#20283a]"
-              )}>
-                {index + 1}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-2">
-                  <HighlightableText active={isHighlighted} className="text-sm font-black leading-5">
-                    {stop.poiName}
-                  </HighlightableText>
-                  <span className="shrink-0 text-[11px] text-neutral-500">{stop.startTime}</span>
-                </div>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {stop.tags.slice(0, 3).map((tag) => (
-                    <span
-                      key={tag}
-                      className={cn(
-                        "rounded-full px-2 py-1 text-[10px] font-semibold transition-colors",
-                        isHighlighted ? "bg-[#eef1ff] text-[#4f68ff]" : "bg-dz-soft text-dz-orange"
-                      )}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-                <HighlightableText active={isHighlighted} as="p" className="mt-2 text-xs leading-5 text-neutral-600">
-                  {stop.reason}
-                </HighlightableText>
-                <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500">
-                  <span>★ {stop.rating}</span>
-                  {stop.avgPrice && <span>人均 ¥{stop.avgPrice}</span>}
-                  <span>排队 {stop.queueMinutes} 分</span>
-                </div>
-                <div className="mt-2 text-[11px] font-semibold text-[#4f68ff]">点击展开看 UGC 摘要和行动入口</div>
-              </div>
-            </div>
-          </motion.div>
-          );
-        })}
-      </div>
-    </article>
-  );
-}
-
-function ExpandedPlanSheet({
-  plan,
-  onClose,
-  onChoose,
-  onNavigate,
-  hasPrevious,
-  hasNext
-}: {
-  plan: DemoRoutePlan;
-  onClose: () => void;
-  onChoose: () => void;
-  onNavigate: (direction: -1 | 1) => void;
-  hasPrevious: boolean;
-  hasNext: boolean;
-}) {
-  return (
-    <motion.div
-      className="absolute inset-0 z-50 flex flex-col bg-white"
-      initial={{ opacity: 0, scale: 0.96, y: 30 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.98, y: 18 }}
-      transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
-    >
-      <header className="shrink-0 border-b border-[#f1f1f1] bg-white px-4 pb-3 pt-[62px]">
-        <div className="grid grid-cols-[38px_1fr_38px] items-center gap-2">
-          <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f3f4f7] text-[#20283a]">
-            ×
-          </button>
-          <div className="min-w-0 text-center">
-            <h2 className="truncate text-base font-black">{plan.title}</h2>
-            <p className="mt-0.5 text-xs font-semibold text-neutral-500">全程约 {plan.totalMinutes} 分钟</p>
-          </div>
-          <span aria-hidden className="h-9 w-9" />
-        </div>
-      </header>
-
-      <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {hasPrevious && (
-          <button
-            onClick={() => onNavigate(-1)}
-            className="absolute left-2 top-1/2 z-10 flex h-10 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-black/20 text-white backdrop-blur"
-          >
-            ‹
-          </button>
-        )}
-        {hasNext && (
-          <button
-            onClick={() => onNavigate(1)}
-            className="absolute right-2 top-1/2 z-10 flex h-10 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-black/20 text-white backdrop-blur"
-          >
-            ›
-          </button>
-        )}
-        <SvgRouteMap points={plan.mapPoints} tone={plan.mapTone} summary={`${plan.badge} · ${plan.score} 分`} />
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {plan.transports.map((transport) => (
-            <div key={transport.mode} className="rounded-xl bg-dz-soft px-2 py-2">
-              <div className="text-[11px] font-bold">{transport.label}</div>
-              <div className="mt-1 text-xs text-neutral-600">{transport.minutes} 分钟</div>
-              <div className="mt-1 truncate text-[11px] text-neutral-500">{transport.cost}</div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 space-y-3 pb-28">
-          {plan.stops.map((stop, index) => (
-            <section key={stop.poiId} className="rounded-2xl border border-dz-line bg-white p-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-dz-yellow text-xs font-black">
-                  {index + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-base font-black">{stop.poiName}</h3>
-                  <p className="mt-1 text-xs font-semibold text-neutral-500">{stop.address}</p>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {stop.tags.map((tag) => (
-                      <span key={tag} className="rounded-full bg-dz-soft px-2 py-1 text-[10px] font-semibold text-dz-orange">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-xs leading-5 text-neutral-600">{stop.ugcSummary}</p>
-                  <p className="mt-2 rounded-xl bg-[#f3f6ff] px-3 py-2 text-xs leading-5 text-[#5260c8]">{stop.reason}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {stop.actions.map((action) => {
-                      const Icon = actionIcon[action.kind];
-                      return (
-                        <span
-                          key={action.id}
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-bold",
-                            action.disabled ? "bg-neutral-100 text-neutral-400" : "bg-dz-soft text-dz-orange"
-                          )}
-                        >
-                          <Icon className="h-3.5 w-3.5" />
-                          {action.label}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </section>
-          ))}
-        </div>
-      </div>
-      <footer className="absolute bottom-[92px] left-0 right-0 border-t border-[#edf0f4] bg-white/88 px-4 pb-3 pt-3 backdrop-blur">
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            onChoose();
-          }}
-          className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white"
-        >
-          选用此方案
-        </button>
-      </footer>
-    </motion.div>
-  );
-}
+/* transportIcon, StarRating, PlanCard, ExpandedPlanSheet moved to ./plan-card.tsx and ./expanded-plan-sheet.tsx */
 
 function SelectedPlanView({
   plan,
@@ -4237,301 +4648,6 @@ function preferenceSyncStatusText(status: "idle" | "loading" | "saved" | "error"
   return labels[status];
 }
 
-function MobileComposer({
-  view,
-  draft,
-  setDraft,
-  inputMode,
-  setInputMode,
-  keyboardOpen,
-  setKeyboardOpen,
-  voicePressed,
-  setVoicePressed,
-  onSubmit
-}: {
-  view: string;
-  draft: string;
-  setDraft: (value: string) => void;
-  inputMode: "text" | "voice";
-  setInputMode: (mode: "text" | "voice") => void;
-  keyboardOpen: boolean;
-  setKeyboardOpen: (open: boolean) => void;
-  voicePressed: boolean;
-  setVoicePressed: (pressed: boolean) => void;
-  onSubmit: (text?: string) => void;
-}) {
-  const [voiceCancelArmed, setVoiceCancelArmed] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("按住说话");
-  const [routePlanningEnabled, setRoutePlanningEnabled] = useState(true);
-  const voiceStartYRef = useRef<number | null>(null);
-  const voiceCancelArmedRef = useRef(false);
-  const textLongPressTimerRef = useRef<number | undefined>(undefined);
-  const textLongPressActiveRef = useRef(false);
-  const isStartView = view === "start";
-
-  useEffect(() => {
-    return () => {
-      if (textLongPressTimerRef.current) {
-        window.clearTimeout(textLongPressTimerRef.current);
-      }
-    };
-  }, []);
-
-  if (view === "settings") {
-    return null;
-  }
-
-  const placeholder =
-    view === "plans" || view === "refining" || view === "selected"
-      ? "试试说“换掉咖啡馆”或“不想走太多”"
-      : inputMode === "voice"
-        ? "按住说话"
-        : "发消息或按住说话";
-  const voiceFieldStateClass = voiceCancelArmed
-    ? "bg-[rgba(255,165,178,0.95)] text-[#f70000]"
-    : voicePressed
-      ? "bg-[rgba(15,111,255,0.95)] text-white"
-      : "bg-[rgba(243,243,243,0.9)] text-[#727272]";
-  const showVoiceControl = inputMode === "voice" || voicePressed;
-
-  function toggleInputMode() {
-    if (inputMode === "text") {
-      setInputMode("voice");
-      setKeyboardOpen(false);
-      return;
-    }
-    setInputMode("text");
-    setKeyboardOpen(true);
-  }
-
-  function beginVoice(pointerY: number) {
-    voiceStartYRef.current = pointerY;
-    voiceCancelArmedRef.current = false;
-    setVoiceCancelArmed(false);
-    setVoiceStatusText("松手发送，上滑取消");
-    setVoicePressed(true);
-  }
-
-  function moveVoice(pointerY: number) {
-    if (voiceStartYRef.current === null) {
-      return;
-    }
-    const shouldCancel = voiceStartYRef.current - pointerY > 54;
-    voiceCancelArmedRef.current = shouldCancel;
-    setVoiceCancelArmed(shouldCancel);
-    setVoiceStatusText(shouldCancel ? "松手取消" : "松手发送，上滑取消");
-  }
-
-  function finishVoice() {
-    const shouldCancel = voiceCancelArmedRef.current;
-    voiceStartYRef.current = null;
-    voiceCancelArmedRef.current = false;
-    setVoicePressed(false);
-    setVoiceCancelArmed(false);
-
-    if (shouldCancel) {
-      setVoiceStatusText("按住说话");
-      if (inputMode === "text") {
-        setInputMode("text");
-      }
-      return;
-    }
-
-    const mockSpeech = voiceMockTextForView(view);
-    setDraft(mockSpeech);
-    setVoiceStatusText(`识别到：${mockSpeech}`);
-    window.setTimeout(() => {
-      setVoiceStatusText("按住说话");
-      onSubmit(mockSpeech);
-    }, 180);
-  }
-
-  function clearTextLongPressTimer() {
-    if (textLongPressTimerRef.current) {
-      window.clearTimeout(textLongPressTimerRef.current);
-      textLongPressTimerRef.current = undefined;
-    }
-  }
-
-  function beginTextLongPress(event: ReactPointerEvent<HTMLDivElement>) {
-    if (inputMode !== "text") {
-      return;
-    }
-    const target = event.target as HTMLElement;
-    if (target.closest("button")) {
-      return;
-    }
-
-    event.currentTarget.setPointerCapture(event.pointerId);
-    textLongPressActiveRef.current = false;
-    voiceStartYRef.current = event.clientY;
-    clearTextLongPressTimer();
-    textLongPressTimerRef.current = window.setTimeout(() => {
-      textLongPressActiveRef.current = true;
-      setKeyboardOpen(false);
-      if (document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-      }
-      beginVoice(event.clientY);
-    }, 260);
-  }
-
-  function moveTextLongPress(pointerY: number) {
-    if (!textLongPressActiveRef.current) {
-      return;
-    }
-    moveVoice(pointerY);
-  }
-
-  function finishTextLongPress() {
-    clearTextLongPressTimer();
-    if (!textLongPressActiveRef.current) {
-      voiceStartYRef.current = null;
-      return;
-    }
-    textLongPressActiveRef.current = false;
-    finishVoice();
-  }
-
-  return (
-    <footer
-      data-mobile-composer="true"
-      className={cn(
-        "relative z-20 shrink-0 bg-transparent px-[25px] pt-0 transition-[padding] duration-300",
-        keyboardOpen && inputMode === "text" ? "pb-[354px]" : isStartView ? "pb-[27px]" : "pb-10"
-      )}
-    >
-      {isStartView && (
-        <button
-          type="button"
-          aria-label={routePlanningEnabled ? "路线规划已开启" : "路线规划已关闭"}
-          aria-pressed={routePlanningEnabled}
-          onClick={() => setRoutePlanningEnabled((enabled) => !enabled)}
-          className="relative z-20 mb-2 block h-[25px] w-[113px] bg-contain bg-center bg-no-repeat"
-          style={{
-            backgroundImage: `url('/dianping-assets/${routePlanningEnabled ? "路线规划按钮开启态.png" : "路线规划按钮关闭态.png"}')`
-          }}
-        />
-      )}
-      <div
-        className={cn(
-          "relative z-20 flex h-11 items-center gap-2 rounded-full border border-white transition-colors",
-          "overflow-visible py-[11px] pl-4 pr-[4px] shadow-[0_10px_24px_rgba(0,0,0,0.055),0_0_22px_rgba(255,102,43,0.08)]",
-          showVoiceControl ? voiceFieldStateClass : "bg-[rgba(243,243,243,0.9)] text-[#727272]"
-        )}
-        onPointerDown={beginTextLongPress}
-        onPointerMove={(event) => moveTextLongPress(event.clientY)}
-        onPointerUp={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          finishTextLongPress();
-        }}
-        onPointerCancel={finishTextLongPress}
-      >
-        {showVoiceControl && voicePressed && !voiceCancelArmed && (
-          <motion.span
-            aria-hidden="true"
-            className="pointer-events-none absolute -inset-1 rounded-full border border-[#1b76ff]/45 shadow-[0_0_24px_rgba(27,118,255,0.42)]"
-            animate={{
-              scale: [1, 1.035, 1],
-              opacity: [0.7, 0.25, 0.7],
-              boxShadow: [
-                "0 0 16px rgba(27,118,255,0.35)",
-                "0 0 34px rgba(27,118,255,0.6)",
-                "0 0 16px rgba(27,118,255,0.35)"
-              ]
-            }}
-            transition={{ repeat: Infinity, duration: 0.9, ease: "easeInOut" }}
-          />
-        )}
-        <button
-          onClick={toggleInputMode}
-          className={cn(
-            "flex shrink-0 items-center justify-center",
-            "h-[22px] w-[22px]"
-          )}
-          aria-label={inputMode === "text" ? "切换到语音输入" : "切换到文字输入"}
-        >
-          {inputMode === "text" ? (
-            <span
-              aria-hidden="true"
-              className="block h-[22px] w-[22px] bg-contain bg-center bg-no-repeat"
-              style={{ backgroundImage: "url('/dianping-assets/ugc_review_add_voice_new_icon_Normal@3x.png')" }}
-            />
-          ) : (
-            <Keyboard className="h-4 w-4 text-current" />
-          )}
-        </button>
-        {showVoiceControl ? (
-          <button
-            onPointerDown={(event) => {
-              event.currentTarget.setPointerCapture(event.pointerId);
-              beginVoice(event.clientY);
-            }}
-            onPointerMove={(event) => moveVoice(event.clientY)}
-            onPointerUp={(event) => {
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              finishVoice();
-            }}
-            onPointerCancel={() => {
-              setVoicePressed(false);
-              setVoiceCancelArmed(false);
-              voiceCancelArmedRef.current = false;
-              setVoiceStatusText("按住说话");
-              voiceStartYRef.current = null;
-            }}
-            onPointerLeave={() => {
-              if (voicePressed) {
-                voiceCancelArmedRef.current = true;
-                setVoiceCancelArmed(true);
-                setVoiceStatusText("松手取消");
-              }
-            }}
-            className={cn(
-              "relative flex min-w-0 flex-1 items-center justify-center rounded-full text-[14px] transition",
-              "h-[22px] font-normal"
-            )}
-          >
-            {voicePressed || voiceStatusText !== "按住说话" ? voiceStatusText : placeholder}
-          </button>
-        ) : (
-          <>
-            <input
-              value={draft}
-              onFocus={() => setKeyboardOpen(true)}
-              onClick={() => setKeyboardOpen(true)}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  onSubmit();
-                }
-              }}
-              placeholder={placeholder}
-              className={cn(
-                "min-w-0 flex-1 bg-transparent text-[14px] outline-none",
-                "font-normal leading-[22px] tracking-[-0.08px] placeholder:text-[#727272]"
-              )}
-            />
-            <button
-              onClick={() => onSubmit()}
-              className={cn(
-                "flex shrink-0 items-center justify-center rounded-full bg-[#f26b43] bg-contain bg-center bg-no-repeat text-white",
-                "h-[35px] w-[35px]"
-              )}
-              style={{ backgroundImage: "url('/dianping-assets/submit.png')" }}
-              aria-label="发送"
-            />
-          </>
-        )}
-      </div>
-      {keyboardOpen && inputMode === "text" && <MockKeyboard onAction={onSubmit} />}
-    </footer>
-  );
-}
-
 function BlockTitle({ title, subtitle, compact = false }: { title: string; subtitle: string; compact?: boolean }) {
   return (
     <div className={cn(compact ? "mb-0" : "mb-4")}>
@@ -4541,7 +4657,11 @@ function BlockTitle({ title, subtitle, compact = false }: { title: string; subti
   );
 }
 
-function isRoutePlanningGoal(goal: string) {
+/**
+ * 仅用于 UI 提示（例如搜索入口显示"这看起来像路线规划"），不再决定接口调用。
+ * 所有用户输入统一走 /interactions/respond，由后端 InteractionRouterAgent 分流。
+ */
+function _isRoutePlanningGoal(goal: string) {
   const normalized = goal.replace(/\s/g, "");
   if (!normalized) {
     return false;
@@ -4574,85 +4694,6 @@ function createPromptSummary(prompt: string) {
   }
 
   return normalized.length > 16 ? `${normalized.slice(0, 16)}...` : normalized;
-}
-
-function providerStatusesFromTrace(trace: AgentTrace): ProviderStatus[] {
-  const statuses = new Map<string, ProviderStatus>();
-
-  for (const event of trace.events) {
-    collectProviderStatus(event.tool_output, statuses);
-    collectProviderStatus(event.output, statuses);
-    if (event.fallback_used && event.tool_name) {
-      const providerName = event.tool_name.includes("llm") ? "longcat" : event.tool_name.includes("route") ? "amap" : event.tool_name;
-      statuses.set(providerName, {
-        name: providerName,
-        label: providerLabel(providerName),
-        status: "mock",
-        lastDegradedReason: event.summary
-      });
-    }
-  }
-
-  if (!statuses.size && trace.runner_mode === "deterministic_mock") {
-    statuses.set("deterministic_mock", {
-      name: "deterministic_mock",
-      label: "本地 Mock Runner",
-      status: "mock",
-      lastDegradedReason: "本轮使用本地可复现 fallback。"
-    });
-  }
-
-  return Array.from(statuses.values());
-}
-
-function collectProviderStatus(value: unknown, statuses: Map<string, ProviderStatus>) {
-  if (!isRecord(value)) {
-    return;
-  }
-
-  const providerCall = isRecord(value.provider_call) ? value.provider_call : value;
-  const provider = typeof providerCall.provider === "string" ? providerCall.provider : undefined;
-  if (provider) {
-    const fallbackUsed = providerCall.fallback_used === true;
-    const reliability = typeof providerCall.reliability === "string" ? providerCall.reliability : undefined;
-    const error = typeof providerCall.error === "string" ? providerCall.error : undefined;
-    const status: ProviderStatus["status"] = error?.toLowerCase().includes("timeout")
-      ? "timeout"
-      : fallbackUsed || reliability === "mocked" || provider.includes("mock") || provider === "deterministic_template"
-        ? "mock"
-        : "connected";
-    statuses.set(provider, {
-      name: provider,
-      label: providerLabel(provider),
-      status,
-      lastDegradedReason: error
-    });
-  }
-
-  for (const item of Object.values(value)) {
-    if (isRecord(item)) {
-      collectProviderStatus(item, statuses);
-    }
-  }
-}
-
-function providerLabel(provider: string) {
-  const labels: Record<string, string> = {
-    amap: "高德地图",
-    caiyun: "彩云天气",
-    longcat: "LongCat LLM",
-    deterministic_template: "LLM 模板兜底",
-    mock_map_provider: "Mock 地图",
-    mock_weather_provider: "Mock 天气",
-    mock_poi_search: "Mock POI",
-    mock_local_poi_enrichment: "本地深度字段",
-    deterministic_mock: "本地 Mock Runner"
-  };
-  return labels[provider] ?? provider;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function agentStrategyToRunningStep(strategy: AgentStrategy): RunningAgentStep {
@@ -5255,19 +5296,6 @@ function formatClarificationAnswer(answer: string | string[]) {
   return Array.isArray(answer) ? answer.join("、") : answer;
 }
 
-function voiceMockTextForView(view: string) {
-  if (view === "plans" || view === "refining") {
-    return "换掉咖啡馆，少走一点路";
-  }
-  if (view === "clarifying") {
-    return "三个人，今天下午，微辣可以";
-  }
-  if (view === "summary") {
-    return "预算控制在人均一百五以内";
-  }
-  return "今天下午想在北京约会，不想排队，想吃饭加看展";
-}
-
 function createMockShareUrl(plan: DemoRoutePlan) {
   const params = new URLSearchParams({
     routeId: plan.id,
@@ -5374,13 +5402,28 @@ function apiPlanToDemoPlan(plan: ApiRoutePlan, index = 0): DemoRoutePlan {
       durationMinutes: stop.duration_minutes || 45,
       distanceFromPrevious: stop.distance_from_previous ?? (stopIndex === 0 ? "起点" : "短距离移动"),
       ugcSummary: stop.ugc_summary ?? "后端暂未返回 UGC 摘要，前端先展示推荐理由作为解释兜底。",
+      tasteSummary: stop.taste_summary,
+      envSummary: stop.env_summary,
+      images: stop.images,
       reason: stop.reason || "命中本轮需求和用户偏好，作为路线中的稳定候选点。",
       actions: stop.actions?.length
         ? stop.actions
         : [
             { id: `${poiId}-nav`, label: "导航", kind: "navigate" },
             { id: `${poiId}-queue`, label: "在线排号", kind: "queue", disabled: true }
-          ]
+          ],
+      transportOptions: stop.transport_options?.length
+        ? stop.transport_options
+        : undefined,
+      platformBadge: stop.platform_badge,
+      platformBadges: stop.platform_badges,
+      tasteRating: stop.taste_rating,
+      environmentRating: stop.environment_rating,
+      serviceRating: stop.service_rating,
+      recommendedDishes: stop.recommended_dishes,
+      headPic: stop.head_pic,
+      reviewCount: stop.review_count,
+      positiveRate: stop.positive_rate
     };
   });
 
@@ -5388,6 +5431,7 @@ function apiPlanToDemoPlan(plan: ApiRoutePlan, index = 0): DemoRoutePlan {
     id: plan.id,
     title: plan.title || "后端生成路线",
     subtitle: plan.subtitle ?? "由 API 返回的真实规划结果",
+    description: plan.description,
     theme: plan.theme ?? "api-generated",
     badge: plan.badge ?? "API",
     score: plan.score ?? 0,
@@ -5532,6 +5576,60 @@ function getChangedStopIdFromDiff(plan: DemoRoutePlan, diff?: RefinementDiff) {
   return plan.stops[0]?.poiId;
 }
 
+function directAnswerFromChatResponse(question: string, response: ChatResponsePayload): DirectAnswer {
+  const poiProvider = response.poi_provider;
+  const answerProvider = response.answer_provider;
+  const fallbackReason = response.fallback_reason;
+
+  return {
+    question,
+    answer: response.answer,
+    poiHints: response.related_pois.map((poi) => {
+      const queueMinutes = poi.queue_minutes ?? poi.queueMinutes;
+      const avgPrice = poi.avg_price ?? poi.avgPrice;
+      const metaParts = [
+        poi.area,
+        typeof avgPrice === "number" ? `人均 ¥${avgPrice}` : undefined,
+        typeof queueMinutes === "number" ? `排队 ${queueMinutes} 分钟` : undefined,
+        `${poi.rating} 分`
+      ].filter(Boolean);
+      const reason =
+        poi.ugc_summary ??
+        poi.ugcSummary ??
+        poi.decisionSignals?.selected_reason ??
+        (poi.tags.length ? `命中 ${poi.tags.slice(0, 3).join("、")}。` : "后端返回的相关 POI，可作为普通问答引用。");
+
+      const recommendedDishes = poi.recommendedDishes?.map((dish) =>
+        typeof dish === "string" ? dish : dish.name
+      );
+
+      return {
+        id: poi.id,
+        name: poi.name,
+        category: poi.category,
+        address: poi.address ?? "",
+        rating: poi.rating,
+        meta: metaParts.join(" · "),
+        reason,
+        latitude: poi.latitude,
+        longitude: poi.longitude,
+        recommendedDishes: recommendedDishes?.length ? recommendedDishes : undefined,
+        openHours: poi.openHours,
+        source: typeof (poi as Record<string, unknown>).source === "string"
+          ? ((poi as Record<string, unknown>).source as "amap" | "mock")
+          : undefined,
+        reliability: typeof (poi as Record<string, unknown>).reliability === "object"
+          ? ((poi as Record<string, unknown>).reliability as Record<string, string>)
+          : undefined
+      };
+    }),
+    fallback_used: response.fallback_used,
+    fallback_reason: fallbackReason,
+    poi_provider: poiProvider,
+    answer_provider: answerProvider
+  };
+}
+
 function createDirectAnswer(question: string): DirectAnswer {
   const normalized = question.replace(/\s/g, "");
 
@@ -5540,9 +5638,9 @@ function createDirectAnswer(question: string): DirectAnswer {
       question,
       answer: "附近有几家还比较稳的便利店。优先看悠乐汇和望京 SOHO 周边，距离近、营业时间覆盖晚间，临时买水或补给不用专门绕路。",
       poiHints: [
-        { name: "7-Eleven 悠乐汇店", meta: "约 280m · 营业到 23:30", reason: "离当前商圈近，适合顺手买饮料、纸巾和简单零食。" },
-        { name: "便利蜂 方恒国际店", meta: "约 520m · 评分 4.5", reason: "在办公楼底商，晚间人流稳定，找起来比较直接。" },
-        { name: "小象超市 望京站", meta: "约 900m · 支持外卖", reason: "如果不想走过去，可以直接下单，适合大件补给。" }
+        { id: "mock-poi-711", name: "7-Eleven 悠乐汇店", category: "shopping", address: "悠乐汇 B1", rating: 4.3, meta: "约 280m · 营业到 23:30", reason: "离当前商圈近，适合顺手买饮料、纸巾和简单零食。", source: "mock" },
+        { id: "mock-poi-bianlifeng", name: "便利蜂 方恒国际店", category: "shopping", address: "方恒国际底商", rating: 4.5, meta: "约 520m · 评分 4.5", reason: "在办公楼底商，晚间人流稳定，找起来比较直接。", source: "mock" },
+        { id: "mock-poi-xiaoxiang", name: "小象超市 望京站", category: "shopping", address: "望京 SOHO T3", rating: 4.2, meta: "约 900m · 支持外卖", reason: "如果不想走过去，可以直接下单，适合大件补给。", source: "mock" }
       ]
     };
   }
@@ -5552,9 +5650,9 @@ function createDirectAnswer(question: string): DirectAnswer {
       question,
       answer: "如果只是想找个地方坐坐，建议先看低排队、座位相对稳定的茶饮和咖啡店。望京 SOHO 内更方便，路边独立店更安静。",
       poiHints: [
-        { name: "小山茶饮廊", meta: "约 430m · 人均 ¥46", reason: "座位周转比热门咖啡店快，适合短暂停留。" },
-        { name: "Luckin Coffee 望京新世界店", meta: "约 620m · 出杯快", reason: "适合拿了就走，排队风险低。" },
-        { name: "桥下咖啡小馆", meta: "约 1.1km · 安静", reason: "更像休息点，适合聊天，不太适合赶时间。" }
+        { id: "mock-poi-tea", name: "小山茶饮廊", category: "dessert", address: "望京 SOHO T2 一层", rating: 4.4, meta: "约 430m · 人均 ¥46", reason: "座位周转比热门咖啡店快，适合短暂停留。", source: "mock" },
+        { id: "mock-poi-luckin", name: "Luckin Coffee 望京新世界店", category: "dessert", address: "望京新世界 B1", rating: 4.1, meta: "约 620m · 出杯快", reason: "适合拿了就走，排队风险低。", source: "mock" },
+        { id: "mock-poi-bridge", name: "桥下咖啡小馆", category: "dessert", address: "大山子桥东巷", rating: 4.6, meta: "约 1.1km · 安静", reason: "更像休息点，适合聊天，不太适合赶时间。", source: "mock" }
       ]
     };
   }
@@ -5564,9 +5662,9 @@ function createDirectAnswer(question: string): DirectAnswer {
       question,
       answer: "我先按“附近、排队少、口碑稳定”给你快速筛了一组。想要完整吃饭加逛街路线时，可以继续说“帮我规划一条路线”。",
       poiHints: [
-        { name: "李串串老店", meta: "1.0km · 热门榜第 1 名", reason: "口味辨识度高，但饭点要注意排队。" },
-        { name: "蓝港日料小食堂", meta: "打车约 10 分钟 · 排队约 7 分", reason: "更适合低排队约会，环境稳定。" },
-        { name: "半重山老火锅双人套", meta: "994m · 今日免费试", reason: "如果想薅活动，可以优先查看名额。" }
+        { id: "mock-poi-chuanchuan", name: "李串串老店", category: "food", address: "望京西路", rating: 4.5, meta: "1.0km · 热门榜第 1 名", reason: "口味辨识度高，但饭点要注意排队。", source: "mock" },
+        { id: "mock-poi-japanese", name: "蓝港日料小食堂", category: "food", address: "蓝色港湾 B1", rating: 4.5, meta: "打车约 10 分钟 · 排队约 7 分", reason: "更适合低排队约会，环境稳定。", source: "mock" },
+        { id: "mock-poi-hotpot", name: "半重山老火锅双人套", category: "food", address: "三元桥", rating: 4.3, meta: "994m · 今日免费试", reason: "如果想薅活动，可以优先查看名额。", source: "mock" }
       ]
     };
   }
@@ -5575,9 +5673,9 @@ function createDirectAnswer(question: string): DirectAnswer {
     question,
     answer: "我先按附近 POI、营业状态和大众点评口碑做了快速回答。这个问题更像即时问答，所以不进入完整路线规划；如果你想要多站行程，可以直接说“帮我规划一条路线”。",
     poiHints: [
-      { name: "望京新世界", meta: "约 746m · 商场综合体", reason: "吃喝、购物、休息点密集，适合作为默认落点。" },
-      { name: "望京悠乐汇", meta: "约 994m · 生活服务集中", reason: "适合找便利店、咖啡、简餐等即时需求。" },
-      { name: "大山子口碑餐饮带", meta: "约 1.5km · 餐饮选择多", reason: "如果想顺便吃饭，这里比单点搜索更稳。" }
+      { id: "mock-poi-xinshijie", name: "望京新世界", category: "shopping", address: "望京西路", rating: 4.3, meta: "约 746m · 商场综合体", reason: "吃喝、购物、休息点密集，适合作为默认落点。", source: "mock" },
+      { id: "mock-poi-youlehui", name: "望京悠乐汇", category: "shopping", address: "望京街 9 号", rating: 4.2, meta: "约 994m · 生活服务集中", reason: "适合找便利店、咖啡、简餐等即时需求。", source: "mock" },
+      { id: "mock-poi-dashanzi", name: "大山子口碑餐饮带", category: "food", address: "大山子路口", rating: 4.1, meta: "约 1.5km · 餐饮选择多", reason: "如果想顺便吃饭，这里比单点搜索更稳。", source: "mock" }
     ]
   };
 }

@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DZUltra Intro Bar v1 — Apple Style</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+  <style>
+    :root {
+      --dz-primary: #FF662B;
+      --dz-orange: #ff8a00;
+      --dz-yellow: #ffd84d;
+      --dz-ink: #171717;
+      --dz-soft: #fff7df;
+      --dz-line: #ece7dc;
+      --dz-bg: #f7f4ed;
+
+      /* Apple-inspired warm palette */
+      --bg: #f7f4ed;
+      --card: #ffffff;
+      --card-elevated: #fafaf8;
+      --text-primary: #1d1d1f;
+      --text-secondary: #6e6e73;
+      --text-tertiary: #a1a1a6;
+      --accent: #FF662B;
+      --accent-soft: #fff5eb;
+      --accent-glow: rgba(255, 102, 43, 0.15);
+      --border: rgba(0, 0, 0, 0.06);
+      --shadow-sm: 0 2px 12px rgba(0,0,0,0.04);
+      --shadow-md: 0 8px 32px rgba(0,0,0,0.06);
+      --shadow-glow: 0 12px 48px var(--accent-glow);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      overflow-x: hidden;
+      color: var(--text-primary);
+    }
+
+    /* ===== Carousel Layout ===== */
+    .carousel-root {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      padding: 48px 0 32px;
+    }
+    .carousel-track {
+      display: flex;
+      gap: 24px;
+      padding: 0 calc(50% - 340px);
+      transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    /* ===== Cards ===== */
+    .card {
+      flex: 0 0 680px;
+      height: 380px;
+      background: var(--card);
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }
+    .card:active { cursor: grabbing; }
+    .card.active {
+      box-shadow: var(--shadow-glow), var(--shadow-md);
+      transform: scale(1);
+      opacity: 1;
+    }
+    .card.inactive {
+      transform: scale(0.96);
+      opacity: 0.5;
+      filter: saturate(0.8);
+    }
+
+    /* Card top accent line */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent 10%, var(--accent) 50%, transparent 90%);
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+    .card.active::before { opacity: 0.6; }
+
+    /* ===== Card Content Layout ===== */
+    .card-content {
+      display: flex;
+      flex-direction: row;
+      height: 100%;
+      padding: 40px 48px;
+      gap: 40px;
+      align-items: center;
+    }
+    .card-text {
+      flex: 0 0 280px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .card-visual-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    /* ===== Typography ===== */
+    .eyebrow {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    .card-title {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.15;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+      letter-spacing: -0.02em;
+    }
+    .card-desc {
+      font-size: 15px;
+      font-weight: 400;
+      line-height: 1.6;
+      color: var(--text-secondary);
+    }
+    .card-footer {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 16px 48px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-top: 1px solid var(--border);
+      background: linear-gradient(to top, rgba(250,250,248,0.9), transparent);
+    }
+    .tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 100px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      letter-spacing: 0.02em;
+    }
+    .hint {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      font-weight: 500;
+    }
+
+    /* ===== Cover Card Special Layout ===== */
+    .cover-card .card-content {
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 48px;
+    }
+    .cover-top {
+      width: 100%;
+    }
+    .cover-brand {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      margin-bottom: 16px;
+    }
+    .cover-title {
+      font-size: 40px;
+      font-weight: 800;
+      line-height: 1.1;
+      color: var(--text-primary);
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+    .cover-subtitle {
+      font-size: 17px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      max-width: 420px;
+    }
+    .cover-bottom {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+    }
+    .cover-visual {
+      position: absolute;
+      right: 48px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 220px;
+      height: 220px;
+    }
+
+    /* ===== Visual Sizes ===== */
+    .visual-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ===== Animations ===== */
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(1); opacity: 0.5; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+    @keyframes dash-flow {
+      0% { stroke-dashoffset: 60; }
+      100% { stroke-dashoffset: 0; }
+    }
+    @keyframes gentle-rotate {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 0.3; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
+    @keyframes line-grow {
+      0% { stroke-dashoffset: 100; }
+      100% { stroke-dashoffset: 0; }
+    }
+
+    /* ===== Indicators ===== */
+    .indicators {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 32px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dz-line);
+      border: none;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      padding: 0;
+    }
+    .dot.active {
+      background: var(--accent);
+      width: 28px;
+      border-radius: 4px;
+    }
+
+    /* ===== Drag Hint ===== */
+    .drag-hint {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 16px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    /* ===== Responsive ===== */
+    @media (max-width: 768px) {
+      .card {
+        flex: 0 0 340px;
+        height: 480px;
+      }
+      .card-content {
+        flex-direction: column;
+        padding: 28px;
+        gap: 20px;
+      }
+      .card-text {
+        flex: none;
+        width: 100%;
+      }
+      .card-title { font-size: 22px; }
+      .card-visual-wrap { height: 160px; }
+      .carousel-track { padding: 0 calc(50% - 170px); }
+      .cover-title { font-size: 28px; }
+      .cover-visual { position: relative; right: auto; top: auto; transform: none; width: 160px; height: 160px; margin-top: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ========== 几何动画组件（更大、更简洁） ==========
+
+    // 封面：DZ 品牌光环
+    function CoverVisual({ isActive }) {
+      return (
+        <svg className="visual-svg" viewBox="0 0 220 220">
+          <defs>
+            <linearGradient id="coverGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#FF662B" />
+              <stop offset="100%" stopColor="#ffd84d" />
+            </linearGradient>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+              <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+          {/* 外环脉冲 */}
+          {[0, 1, 2].map((i) => (
+            <circle
+              key={i}
+              cx="110" cy="110" r="85"
+              fill="none"
+              stroke="url(#coverGrad)"
+              strokeWidth="1"
+              opacity="0.15"
+              style={{
+                animation: isActive ? `pulse-ring 3s ease-out ${i * 1}s infinite` : 'none',
+                transformOrigin: '110px 110px'
+              }}
+            />
+          ))}
+          {/* 主环 */}
+          <circle cx="110" cy="110" r="75" fill="none" stroke="#ece7dc" strokeWidth="1" />
+          <circle cx="110" cy="110" r="65" fill="none" stroke="#ece7dc" strokeWidth="1" opacity="0.5" />
+          {/* DZ 字母 */}
+          <g style={{ animation: isActive ? 'float 4s ease-in-out infinite' : 'none' }}>
+            <rect x="75" y="75" width="32" height="70" rx="8" fill="url(#coverGrad)" opacity="0.9" />
+            <rect x="115" y="75" width="32" height="70" rx="16" fill="url(#coverGrad)" opacity="0.75" />
+          </g>
+          {/* 环绕粒子 */}
+          {[0, 72, 144, 216, 288].map((deg, i) => {
+            const rad = (deg * Math.PI) / 180;
+            return (
+              <circle
+                key={i}
+                cx={110 + 88 * Math.cos(rad)}
+                cy={110 + 88 * Math.sin(rad)}
+                r="4"
+                fill="#FF662B"
+                filter="url(#glow)"
+                style={{ animation: isActive ? `dot-pulse 2s ease-in-out ${i * 0.4}s infinite` : 'none' }}
+              />
+            );
+          })}
+        </svg>
+      );
+    }
+
+    // 约束账本：流动链条
+    function ConstraintVisual({ isActive }) {
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          <defs>
+            <linearGradient id="chainGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#ffd84d" />
+              <stop offset="50%" stopColor="#FF662B" />
+              <stop offset="100%" stopColor="#ffd84d" />
+            </linearGradient>
+          </defs>
+          {/* 主链条 */}
+          <path
+            d="M 40 100 Q 90 50, 140 100 T 240 100"
+            fill="none"
+            stroke="url(#chainGrad)"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray="12 8"
+            style={{ animation: isActive ? 'dash-flow 2s linear infinite' : 'none' }}
+          />
+          {/* 节点 */}
+          {[
+            {x: 40, y: 100, label: '发现'},
+            {x: 100, y: 72, label: '落地'},
+            {x: 180, y: 72, label: '校验'},
+            {x: 240, y: 100, label: '解释'}
+          ].map((p, i) => (
+            <g key={i}>
+              <circle cx={p.x} cy={p.y} r="18" fill="#fff5eb" stroke="#FF662B" strokeWidth="2" />
+              <circle cx={p.x} cy={p.y} r="6" fill="#FF662B" style={{ animation: isActive ? `dot-pulse 2s ease-in-out ${i * 0.3}s infinite` : 'none' }} />
+              <text x={p.x} y={p.y + 32} textAnchor="middle" fontSize="11" fill="#6e6e73" fontWeight="600">{p.label}</text>
+            </g>
+          ))}
+          {/* 连接线 */}
+          <line x1="58" y1="100" x2="82" y2="85" stroke="#ece7dc" strokeWidth="1.5" />
+          <line x1="118" y1="72" x2="162" y2="72" stroke="#ece7dc" strokeWidth="1.5" />
+          <line x1="198" y1="85" x2="222" y2="100" stroke="#ece7dc" strokeWidth="1.5" />
+        </svg>
+      );
+    }
+
+    // Agent 协作：星型网络
+    function AgentVisual({ isActive }) {
+      const center = {x: 140, y: 100};
+      const nodes = [
+        {x: 140, y: 35},
+        {x: 80, y: 65},
+        {x: 200, y: 65},
+        {x: 95, y: 145},
+        {x: 185, y: 145},
+        {x: 140, y: 165}
+      ];
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          <defs>
+            <filter id="agentGlow">
+              <feGaussianBlur stdDeviation="4" result="blur"/>
+              <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+          {/* 连线 */}
+          {nodes.map((n, i) => (
+            <line
+              key={i}
+              x1={center.x} y1={center.y}
+              x2={n.x} y2={n.y}
+              stroke="#ece7dc"
+              strokeWidth="1.5"
+            />
+          ))}
+          {/* 外围节点 */}
+          {nodes.map((n, i) => (
+            <g key={i}>
+              <circle cx={n.x} cy={n.y} r="14" fill="#fff5eb" />
+              <circle
+                cx={n.x} cy={n.y} r="6"
+                fill="#FF662B"
+                style={{ animation: isActive ? `dot-pulse 2s ease-in-out ${i * 0.25}s infinite` : 'none' }}
+              />
+            </g>
+          ))}
+          {/* 中心节点 */}
+          <circle cx={center.x} cy={center.y} r="22" fill="#FF662B" opacity="0.1" />
+          <circle cx={center.x} cy={center.y} r="12" fill="#FF662B" filter="url(#agentGlow)" />
+          <text x={center.x} y={center.y + 5} textAnchor="middle" fontSize="10" fill="white" fontWeight="700">7</text>
+        </svg>
+      );
+    }
+
+    // 排队预测：同心圆脉冲
+    function QueueVisual({ isActive }) {
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          <defs>
+            <radialGradient id="queueGrad" cx="50%" cy="50%">
+              <stop offset="0%" stopColor="#FF662B" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#FF662B" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          {/* 时间轴 */}
+          <line x1="40" y1="170" x2="240" y2="170" stroke="#ece7dc" strokeWidth="2" strokeLinecap="round" />
+          {['14:00', '15:00', '16:00', '17:00'].map((t, i) => (
+            <g key={i}>
+              <circle cx={60 + i * 60} cy="170" r="4" fill={i === 2 ? '#FF662B' : '#ece7dc'} />
+              <text x={60 + i * 60} y="190" textAnchor="middle" fontSize="10" fill="#a1a1a6">{t}</text>
+            </g>
+          ))}
+          {/* 脉冲环 */}
+          {[0, 1, 2].map((i) => (
+            <circle
+              key={i}
+              cx="140" cy="85" r={30 + i * 28}
+              fill="none"
+              stroke="#FF662B"
+              strokeWidth="1.5"
+              opacity="0.3"
+              style={{
+                animation: isActive ? `pulse-ring 2.5s ease-out ${i * 0.6}s infinite` : 'none',
+                transformOrigin: '140px 85px'
+              }}
+            />
+          ))}
+          {/* 中心 */}
+          <circle cx="140" cy="85" r="20" fill="url(#queueGrad)" />
+          <circle cx="140" cy="85" r="12" fill="#FF662B" />
+          <text x="140" y="89" textAnchor="middle" fontSize="9" fill="white" fontWeight="700">OK</text>
+        </svg>
+      );
+    }
+
+    // 天气交通：天气图标 + 路线
+    function WeatherVisual({ isActive }) {
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          {/* 路线 */}
+          <path
+            d="M 40 150 Q 100 60, 140 100 T 240 50"
+            fill="none"
+            stroke="#ece7dc"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray="8 6"
+          />
+          {/* 活跃路线 */}
+          <path
+            d="M 40 150 Q 100 60, 140 100 T 240 50"
+            fill="none"
+            stroke="#FF662B"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray="8 6"
+            style={{ animation: isActive ? 'dash-flow 2s linear infinite' : 'none' }}
+          />
+          {/* 起点 */}
+          <circle cx="40" cy="150" r="10" fill="#FF662B" />
+          <text x="40" y="154" textAnchor="middle" fontSize="8" fill="white" fontWeight="700">A</text>
+          {/* 终点 */}
+          <circle cx="240" cy="50" r="10" fill="#ffd84d" />
+          <text x="240" y="54" textAnchor="middle" fontSize="8" fill="#1d1d1f" fontWeight="700">B</text>
+          {/* 天气云 */}
+          <g style={{ animation: isActive ? 'float 3s ease-in-out infinite' : 'none' }}>
+            <ellipse cx="200" cy="130" rx="28" ry="16" fill="#e8f4fd" />
+            <ellipse cx="215" cy="122" rx="20" ry="14" fill="#e8f4fd" />
+            {/* 雨滴 */}
+            {[190, 205, 220].map((x, i) => (
+              <line
+                key={i}
+                x1={x} y1="140" x2={x - 3} y2="155"
+                stroke="#56A4F0"
+                strokeWidth="2"
+                strokeLinecap="round"
+                opacity="0.5"
+                style={{ animation: isActive ? `dot-pulse 1.2s ease-in-out ${i * 0.2}s infinite` : 'none' }}
+              />
+            ))}
+          </g>
+          {/* 室内标记 */}
+          <rect x="120" y="80" width="40" height="30" rx="6" fill="#fff5eb" stroke="#FF662B" strokeWidth="1.5" />
+          <text x="140" y="99" textAnchor="middle" fontSize="9" fill="#FF662B" fontWeight="700">室内</text>
+        </svg>
+      );
+    }
+
+    // 偏好学习：上升阶梯
+    function PreferenceVisual({ isActive }) {
+      const steps = [
+        {x: 50, y: 160, h: 30, label: '输入'},
+        {x: 100, y: 140, h: 50, label: '选择'},
+        {x: 150, y: 110, h: 80, label: '微调'},
+        {x: 200, y: 70, h: 120, label: '学习'}
+      ];
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          {/* 基线 */}
+          <line x1="30" y1="170" x2="250" y2="170" stroke="#ece7dc" strokeWidth="2" />
+          {/* 阶梯 */}
+          {steps.map((s, i) => (
+            <g key={i}>
+              <rect
+                x={s.x - 20}
+                y={s.y - s.h}
+                width="40"
+                height={s.h}
+                rx="6"
+                fill={i === 3 ? '#FF662B' : '#fff5eb'}
+                opacity={i === 3 ? 0.9 : 0.7}
+                style={{ animation: isActive ? `float 3s ease-in-out ${i * 0.2}s infinite` : 'none' }}
+              />
+              <text x={s.x} y={s.y + 16} textAnchor="middle" fontSize="10" fill="#6e6e73" fontWeight="600">{s.label}</text>
+            </g>
+          ))}
+          {/* 上升箭头 */}
+          <path
+            d="M 60 150 Q 140 40, 220 60"
+            fill="none"
+            stroke="#FF662B"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray="6 4"
+            style={{ animation: isActive ? 'dash-flow 3s linear infinite' : 'none' }}
+          />
+          <polygon points="215,55 225,58 220,68" fill="#FF662B" />
+        </svg>
+      );
+    }
+
+    // 可解释推荐：雷达图
+    function ExplainVisual({ isActive }) {
+      const points = [
+        {x:140,y:30},{x:210,y:70},{x:185,y:155},{x:95,y:155},{x:70,y:70}
+      ];
+      const data = [0.92, 0.78, 0.88, 0.72, 0.96];
+      const dataPoints = points.map((p, i) => ({
+        x: 140 + (p.x - 140) * data[i],
+        y: 95 + (p.y - 95) * data[i]
+      }));
+      const pathD = dataPoints.map((p, i) => (i === 0 ? 'M' : 'L') + ` ${p.x} ${p.y}`).join(' ') + ' Z';
+      const labels = ['口味', '环境', '服务', '性价比', '距离'];
+
+      return (
+        <svg className="visual-svg" viewBox="0 0 280 200">
+          {/* 网格 */}
+          {[0.3, 0.6, 1].map((scale, i) => (
+            <polygon
+              key={i}
+              points={points.map(p => `${140 + (p.x - 140) * scale},${95 + (p.y - 95) * scale}`).join(' ')}
+              fill="none"
+              stroke="#ece7dc"
+              strokeWidth="1"
+              opacity={0.5 + i * 0.15}
+            />
+          ))}
+          {/* 轴线 */}
+          {points.map((p, i) => (
+            <line key={i} x1="140" y1="95" x2={p.x} y2={p.y} stroke="#ece7dc" strokeWidth="1" opacity="0.4" />
+          ))}
+          {/* 数据面 */}
+          <path
+            d={pathD}
+            fill="#FF662B"
+            opacity="0.12"
+            stroke="#FF662B"
+            strokeWidth="2"
+            style={{ animation: isActive ? 'float 4s ease-in-out infinite' : 'none' }}
+          />
+          {/* 数据点 */}
+          {dataPoints.map((p, i) => (
+            <g key={i}>
+              <circle cx={p.x} cy={p.y} r="5" fill="#FF662B" />
+              <text x={points[i].x} y={points[i].y + (points[i].y > 95 ? 16 : -8)} textAnchor="middle" fontSize="9" fill="#6e6e73" fontWeight="600">{labels[i]}</text>
+            </g>
+          ))}
+        </svg>
+      );
+    }
+
+    // ========== 卡片数据（Apple 风文案，只讲优点） ==========
+    const cards = [
+      {
+        id: 'cover',
+        isCover: true,
+        eyebrow: '美团 2026 AI Hackathon',
+        title: 'DZUltra',
+        subtitle: '点仔 Ultra — 懂约束、会追问的路线助手',
+        desc: '面向大众点评的 AI 本地路线智能规划升级方案，让每一次出行都恰到好处。',
+        tag: '赛题 5',
+        hint: '作者：周鸿铭、王涵琪',
+        Visual: CoverVisual
+      },
+      {
+        id: 'constraint',
+        eyebrow: '架构创新',
+        title: '约束账本',
+        desc: '你的每一个需求都会被认真对待。从发现到解释，全程透明可追溯，推荐理由一目了然。',
+        tag: '透明可信',
+        hint: '全程可追溯',
+        Visual: ConstraintVisual
+      },
+      {
+        id: 'agent',
+        eyebrow: '系统架构',
+        title: '七维协作',
+        desc: '七个专业 Agent 各司其职，理解、规划、调度一气呵成。高效，却不失精准。',
+        tag: '高效精准',
+        hint: 'LangGraph 驱动',
+        Visual: AgentVisual
+      },
+      {
+        id: 'queue',
+        eyebrow: '数据智能',
+        title: '时间先知',
+        desc: '提前预知每个目的地的等待时间，智能调整行程节奏，让约会从不被排队打扰。',
+        tag: '从容出行',
+        hint: '到达即享',
+        Visual: QueueVisual
+      },
+      {
+        id: 'weather',
+        eyebrow: '环境感知',
+        title: '因天制宜',
+        desc: '雨天自动推荐室内路线，晴天拥抱户外风光。四种出行方式智能对比，总有一款最适合当下。',
+        tag: '贴心应变',
+        hint: '全场景覆盖',
+        Visual: WeatherVisual
+      },
+      {
+        id: 'preference',
+        eyebrow: '个性化',
+        title: '愈用愈懂',
+        desc: '每一次选择都在加深理解。你的偏好会被温柔记忆，下次推荐，更懂你的心意。',
+        tag: '持续进化',
+        hint: '记忆你的喜欢',
+        Visual: PreferenceVisual
+      },
+      {
+        id: 'explain',
+        eyebrow: '透明度',
+        title: '明明白白',
+        desc: '为什么推荐这家？为什么不去那家？每个决定都有清晰理由，拒绝一切黑盒操作。',
+        tag: '可解释',
+        hint: 'Debug Trace 回放',
+        Visual: ExplainVisual
+      }
+    ];
+
+    // ========== 轮播组件 ==========
+    function Carousel() {
+      const [current, setCurrent] = useState(0);
+      const [isDragging, setIsDragging] = useState(false);
+      const [startX, setStartX] = useState(0);
+      const [translateX, setTranslateX] = useState(0);
+      const containerRef = useRef(null);
+      const cardWidth = 680;
+      const gap = 24;
+
+      const goTo = useCallback((index) => {
+        setCurrent(Math.max(0, Math.min(cards.length - 1, index)));
+      }, []);
+
+      const handleMouseDown = (e) => {
+        setIsDragging(true);
+        setStartX(e.clientX);
+      };
+      const handleMouseMove = (e) => {
+        if (!isDragging) return;
+        setTranslateX(e.clientX - startX);
+      };
+      const handleMouseUp = () => {
+        if (!isDragging) return;
+        setIsDragging(false);
+        if (translateX < -100) goTo(current + 1);
+        else if (translateX > 100) goTo(current - 1);
+        setTranslateX(0);
+      };
+
+      const handleTouchStart = (e) => {
+        setIsDragging(true);
+        setStartX(e.touches[0].clientX);
+      };
+      const handleTouchMove = (e) => {
+        if (!isDragging) return;
+        setTranslateX(e.touches[0].clientX - startX);
+      };
+      const handleTouchEnd = () => {
+        if (!isDragging) return;
+        setIsDragging(false);
+        if (translateX < -60) goTo(current + 1);
+        else if (translateX > 60) goTo(current - 1);
+        setTranslateX(0);
+      };
+
+      useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        const handleWheel = (e) => {
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+            e.preventDefault();
+            if (e.deltaX > 40) goTo(current + 1);
+            if (e.deltaX < -40) goTo(current - 1);
+          }
+        };
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheel);
+      }, [current, goTo]);
+
+      const offset = -current * (cardWidth + gap) + translateX;
+
+      return (
+        <div>
+          <div
+            className="carousel-root"
+            ref={containerRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            <div
+              className="carousel-track"
+              style={{
+                transform: `translateX(${offset}px)`,
+                transition: isDragging ? 'none' : 'transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)'
+              }}
+            >
+              {cards.map((card, index) => {
+                const isActive = index === current;
+                if (card.isCover) {
+                  return (
+                    <div
+                      key={card.id}
+                      className={`card cover-card ${isActive ? 'active' : 'inactive'}`}
+                      onClick={() => goTo(index)}
+                    >
+                      <div className="card-content">
+                        <div className="cover-top">
+                          <div className="cover-brand">{card.eyebrow}</div>
+                          <div className="cover-title">{card.title}</div>
+                          <div className="cover-subtitle">{card.subtitle}</div>
+                          <p style={{marginTop: '12px', fontSize: '15px', color: 'var(--text-secondary)', lineHeight: 1.6, maxWidth: '380px'}}>
+                            {card.desc}
+                          </p>
+                        </div>
+                        <div className="cover-bottom">
+                          <span className="tag">{card.tag}</span>
+                          <span className="hint">{card.hint}</span>
+                        </div>
+                        <div className="cover-visual">
+                          <card.Visual isActive={isActive} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={card.id}
+                    className={`card ${isActive ? 'active' : 'inactive'}`}
+                    onClick={() => goTo(index)}
+                  >
+                    <div className="card-content">
+                      <div className="card-text">
+                        <div className="eyebrow">{card.eyebrow}</div>
+                        <div className="card-title">{card.title}</div>
+                        <div className="card-desc">{card.desc}</div>
+                      </div>
+                      <div className="card-visual-wrap">
+                        <card.Visual isActive={isActive} />
+                      </div>
+                    </div>
+                    <div className="card-footer">
+                      <span className="tag">{card.tag}</span>
+                      <span className="hint">{card.hint}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="indicators">
+            {cards.map((_, index) => (
+              <button
+                key={index}
+                className={`dot ${index === current ? 'active' : ''}`}
+                onClick={() => goTo(index)}
+                aria-label={`Slide ${index + 1}`}
+              />
+            ))}
+          </div>
+
+          <div className="drag-hint">← 拖拽或滑动探索更多 →</div>
+        </div>
+      );
+    }
+
+    function App() {
+      return <Carousel />;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

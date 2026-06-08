@@ -6,6 +6,63 @@ from app.models.schemas import (
     LangGraphWorkflowContract,
 )
 
+ROUTER_CONFIDENCE_THRESHOLD = 0.65
+
+
+def build_interaction_router_messages(payload: dict) -> list[dict[str, str]]:
+    """Build the LongCat prompt for InteractionRouterAgent.
+
+    The router only decides which interaction path should handle the message.
+    It must not decide factual questions such as distance, traffic, business
+    hours, queue time, coordinates, weather, or whether a POI truly exists.
+    """
+
+    import json
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 DZUltra 的 InteractionRouterAgent。你的任务只是在用户输入、Plan 模式、"
+                "页面上下文和规则分流建议之间判断交互类型。页面上下文是强提示，不是硬规则；"
+                "如果用户明显切换任务，要允许从方案页回到新规划。你不能判断距离、坐标、通勤、"
+                "营业、排队、天气或 POI 是否真实存在，这些事实必须交给 provider 或确定性工具。"
+                "只输出一个 JSON 对象，不要 Markdown，不要解释正文。\n\n"
+                "plan_mode 语义：\n"
+                "- plan_mode=true 表示用户当前处于路线规划模式，对模糊输入应倾向 new_planning_task。\n"
+                "- plan_mode=false 表示用户未进入规划模式，对模糊输入应倾向 chat_answer。\n"
+                "- 附近 POI 咨询如果同时包含约会、带娃、时间词（今天/周末/下午等）或活动组合"
+                "（如吃+看展），应视为规划意图，走 new_planning_task。\n"
+                "- 纯附近 POI 咨询（如'附近有便利店吗'）无论 plan_mode 如何都走 chat_answer。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    **payload,
+                    "allowed_output_schema": {
+                        "interaction_type": [
+                            "new_planning_task",
+                            "chat_answer",
+                            "answer_clarification",
+                            "confirm_requirements",
+                            "refine_current_plan",
+                            "select_plan",
+                            "switch_task",
+                        ],
+                        "intent_kind": ["planning", "non_planning", "refinement_without_context", "ambiguous"],
+                        "confidence": "0 到 1 的数字。低于 0.65 会被规则分流覆盖。",
+                        "routing_reason": "一句中文短理由，说明为什么进入该交互路径。",
+                        "needs_followup": "布尔值，只表示分流上是否需要继续追问，不表示规划字段是否齐全。",
+                    },
+                    "required_json_only": True,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
 
 MAIN_PLANNING_AGENT_STRATEGY = [
     AgentStrategy(
@@ -125,7 +182,7 @@ CHAT_AGENT_STRATEGY = [
         responsibility="普通 POI 问答时读取少量相关 POI、偏好和 UGC 摘要，返回 answer + related_pois + trace。",
         inputs=["ChatRequest.message", "preference_profile", "related_pois"],
         outputs=["answer", "related_pois", "can_convert_to_plan"],
-        tools=["mock_chat_poi_search", "mock_chat_answer"],
+        tools=["provider_adapter.poi_search", "provider_adapter.llm_chat_completion"],
         handoff_conditions=["已给出可直接展示的回答和引用 POI"],
         failure_fallback="返回低排队、安静聊天和步行友好的默认 POI 建议。",
         trace_events=["agent_started", "tool_called", "chat_answered", "run_completed"],
@@ -165,7 +222,7 @@ AGENT_PROMPT_CONTRACTS = [
         max_llm_calls=1,
         max_react_steps=2,
         latency_budget_ms=500,
-        guardrails=["页面状态是强提示，不是硬规则", "不能把普通 POI 问答误强制成完整路线"],
+        guardrails=["页面状态是强提示，不是硬规则", "不能把普通 POI 问答误强制成完整路线", "plan_mode=true 时模糊输入倾向 new_planning_task，plan_mode=false 时倾向 chat_answer", "附近 POI 咨询+规划上下文（约会/带娃/时间词/活动组合）应视为规划意图"],
         fallback="Plan 模式打开时偏向 new_planning_task，关闭时偏向 chat_answer。",
     ),
     AgentPromptContract(
