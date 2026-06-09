@@ -1,12 +1,13 @@
 "use client";
 
-import { Minus, Plus, Smartphone } from "lucide-react";
+import { Minus, Plus, Smartphone, User } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { DebugTracePanel } from "@/components/debug-trace-panel";
 import { MobileShell } from "@/components/mobile-shell";
 import { ProjectIntroBar } from "@/components/project-intro-bar";
 import { AgentStatusBar } from "@/components/agent-status-bar";
+import { useDemoStore } from "@/stores/use-demo-store";
 import { cn } from "@/lib/utils";
 
 const PHONE_FRAME_WIDTH = 450;
@@ -85,6 +86,19 @@ function MobilePreviewStage() {
   }, [manualScale, stageSize.height, stageSize.width]);
 
   const appliedScale = fitToWindow ? fitScale : manualScale;
+  const appliedMockUsers = useDemoStore((s) => s.appliedMockUsers);
+  const activeUserId = useDemoStore((s) => s.activeUserId);
+  const activeMockUser = appliedMockUsers.find((u) => u.id === activeUserId) ?? appliedMockUsers[0];
+  const setMockBoardTab = useDemoStore((s) => s.setMockBoardTab);
+  const setMockBoardExpanded = useDemoStore((s) => s.setMockBoardExpanded);
+  const setActiveDebugTab = useDemoStore((s) => s.setActiveDebugTab);
+
+  const openMockBoard = () => {
+    setActiveDebugTab("mock");
+    setMockBoardTab("user");
+    setMockBoardExpanded(true);
+  };
+
   const displayScale = Math.round(appliedScale * 100);
 
   function nudgeScale(delta: number) {
@@ -102,6 +116,31 @@ function MobilePreviewStage() {
             {displayScale}%
           </span>
         </div>
+        {/* Mock User 状态胶囊 */}
+        {activeMockUser ? (
+          <button
+            type="button"
+            onClick={openMockBoard}
+            className="flex items-center gap-1.5 rounded-full border border-dz-orange/30 bg-dz-soft/60 px-2.5 py-1 backdrop-blur-sm transition hover:border-dz-orange hover:shadow-sm"
+          >
+            <User className="h-3 w-3 text-dz-orange" />
+            <span className="max-w-[120px] truncate text-[11px] font-bold text-dz-ink">
+              {activeMockUser.name}
+            </span>
+            <span className="rounded-full bg-dz-orange/15 px-1.5 py-px text-[10px] font-semibold text-dz-orange">
+              {activeMockUser.user_type === "new" ? "新用户" : "老用户"}
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={openMockBoard}
+            className="flex items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 transition hover:border-dz-orange/50 hover:bg-dz-soft/40"
+          >
+            <User className="h-3 w-3 text-neutral-400" />
+            <span className="text-[11px] font-medium text-neutral-400">未设置用户</span>
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"

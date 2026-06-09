@@ -50,6 +50,14 @@ export type MockUserFull = {
   user_type?: "new" | "regular";
   city?: string;
   scenario: string;
+  age?: number;
+  gender?: string;
+  occupation?: string;
+  lifestyle_tags?: string[];
+  home_area?: string;
+  work_area?: string;
+  frequent_areas?: string[];
+  current_location?: Record<string, unknown>;
   default_goal?: string;
   group_size?: number;
   time_window?: string;
@@ -59,18 +67,32 @@ export type MockUserFull = {
   avoidances: string[];
   priority_weights: Record<string, number>;
   explain_focus: string[];
+  saved_pois?: Record<string, unknown>[];
+  viewed_pois?: Record<string, unknown>[];
+  rated_pois?: Record<string, unknown>[];
+  ugc_reviews?: Record<string, unknown>[];
+  history_summary?: string;
+  data_origin?: "ai_generated_dataset" | "fallback_template" | "provider_api" | "user_input";
+  provider_name?: string;
+  generated_by?: string;
+  schema_version?: string;
+  data_reliability?: "verified" | "generated_validated" | "fallback_template" | "missing";
 };
 
 export type GenerateMockUserRequest = {
   user_type?: "new" | "regular";
   scenario?: string;
   city?: string;
+  area?: string;
+  customization?: string;
+  current_location?: Record<string, unknown>;
 };
 
 export type GenerateMockPoisRequest = {
   city?: string;
   area?: string;
   theme?: string;
+  customization?: string;
   count?: number;
 };
 
@@ -81,17 +103,23 @@ export type MockLocation = {
   address?: string;
   latitude?: number;
   longitude?: number;
-  source: "manual" | "random";
-  reliability: "user_input" | "mocked";
+  source: "manual" | "random" | "mock_generator" | "ai_generated_dataset";
+  reliability: "user_input" | "mocked" | "generated_validated";
   label: string;
 };
 
 export type GeneratedMockResponse = {
   fallback_used: boolean;
-  source: "deterministic_template" | "longcat" | "openai_agents_sdk";
+  source: "ai_generated_dataset" | "fallback_template" | "longcat" | "openai_agents_sdk";
+  data_origin?: "ai_generated_dataset" | "fallback_template" | "provider_api" | "user_input";
+  provider_name?: string;
+  generated_by?: string;
+  schema_version?: string;
+  reliability?: "verified" | "generated_validated" | "fallback_template" | "missing";
   metadata: Record<string, unknown>;
   users: MockUserFull[];
   pois: MockPoi[];
+  locations?: MockLocation[];
 };
 
 export type RecommendedDish = {
@@ -144,6 +172,11 @@ export type MockPoi = {
   tasteRating?: number;
   environmentRating?: number;
   serviceRating?: number;
+  dataOrigin?: string;
+  providerName?: string;
+  generatedBy?: string;
+  schemaVersion?: string;
+  dataReliability?: string;
 };
 
 export type RouteStop = {
@@ -302,6 +335,8 @@ export type InteractionRequestPayload = {
   constraints?: string[];
   clarification_answers?: Record<string, unknown>;
   preference_detection_enabled?: boolean;
+  require_confirmation?: boolean;
+  confirmed_requirements?: boolean;
 };
 
 export type InteractionResponsePayload = {
@@ -382,7 +417,7 @@ export type RoutePlanResponsePayload = {
   clarification_cards?: ClarificationCard[];
   requirement_summary?: RequirementSummary;
   generation_metadata?: {
-    runner_mode: "deterministic_mock" | "openai_agents_sdk";
+    runner_mode: "real_agent_ai_generated_data" | "deterministic_mock" | "openai_agents_sdk";
     fallback_used: boolean;
     selected_plan_id?: string;
     plan_count: number;
@@ -445,13 +480,36 @@ export type TraceEventType =
   | "chat_answered"
   | "user_refinement_received"
   | "task_switched"
+  | "llm_chunk"
   | "run_completed"
   | "run_failed";
+
+export type LlmChunkData = {
+  type: "llm_chunk";
+  content: string;
+  purpose: string;
+  model?: string;
+  chunk_index?: number;
+};
 
 export type TokenUsage = {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+};
+
+export type LlmRequestInfo = {
+  messages?: Array<{ role: string; content: string }>;
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+};
+
+export type LlmResponseInfo = {
+  id?: string;
+  choices?: Array<unknown>;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  [key: string]: unknown;
 };
 
 export type TraceEventMetadata = {
@@ -461,6 +519,12 @@ export type TraceEventMetadata = {
   tool_duration_ms?: number;
   token_usage?: TokenUsage;
   estimated_cost_cny?: number;
+  llm_request?: LlmRequestInfo;
+  llm_response?: LlmResponseInfo;
+  http_status_code?: number;
+  http_response_body?: string;
+  request_duration_ms?: number;
+  streaming_tokens?: string;
 } & Record<string, unknown>;
 
 export type TraceEvent = {
@@ -485,10 +549,10 @@ export type TraceEvent = {
 export type AgentTrace = {
   id: string;
   user_goal: string;
-  status: "running" | "completed" | "failed";
+  status: "ready" | "running" | "completed" | "failed";
   total_duration_ms: number;
   route_score?: number;
-  runner_mode?: "deterministic_mock" | "openai_agents_sdk";
+  runner_mode?: "real_agent_ai_generated_data" | "deterministic_mock" | "openai_agents_sdk";
   agent_strategy?: AgentStrategy[];
   events: TraceEvent[];
   metadata?: Record<string, unknown>;
@@ -497,10 +561,10 @@ export type AgentTrace = {
 export type TraceSummary = {
   id: string;
   user_goal: string;
-  status: "running" | "completed" | "failed";
+  status: "ready" | "running" | "completed" | "failed";
   total_duration_ms: number;
   route_score?: number;
-  runner_mode?: "deterministic_mock" | "openai_agents_sdk";
+  runner_mode?: "real_agent_ai_generated_data" | "deterministic_mock" | "openai_agents_sdk";
   event_count: number;
   selected_plan_id?: string;
 };
@@ -514,6 +578,11 @@ export type AgentStrategy = {
   handoff_conditions: string[];
   failure_fallback: string;
   trace_events: TraceEventType[];
+  runtime_role?: "main_planning" | "auxiliary" | "background";
+  llm_call_budget?: number;
+  react_step_budget?: number;
+  latency_budget_ms?: number;
+  parallelizable?: boolean;
 };
 
 export type UserPreferenceCategory = "taste" | "budget" | "mobility" | "scenario" | "experience" | "avoidance";

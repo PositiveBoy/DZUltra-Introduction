@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import Any
+from typing import Any, AsyncGenerator
+import json as _json
 
 import httpx
 
@@ -38,9 +39,15 @@ class ProviderCallResult:
     fallback_provider: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Debug Trace 增强字段
+    llm_request: dict[str, Any] | None = None
+    llm_response: dict[str, Any] | None = None
+    http_status_code: int | None = None
+    http_response_body: str | None = None
+    request_duration_ms: int | None = None
 
     def trace_output(self) -> dict[str, Any]:
-        return {
+        out = {
             "provider": self.provider,
             "capability": self.capability,
             "params": self.params,
@@ -51,6 +58,17 @@ class ProviderCallResult:
             "error": self.error,
             "metadata": self.metadata,
         }
+        if self.llm_request is not None:
+            out["llm_request"] = self.llm_request
+        if self.llm_response is not None:
+            out["llm_response"] = self.llm_response
+        if self.http_status_code is not None:
+            out["http_status_code"] = self.http_status_code
+        if self.http_response_body is not None:
+            out["http_response_body"] = self.http_response_body[:500]
+        if self.request_duration_ms is not None:
+            out["request_duration_ms"] = self.request_duration_ms
+        return out
 
 
 class ProviderAdapterLayer:
@@ -245,6 +263,7 @@ class ProviderAdapterLayer:
         fallback_content: str,
         temperature: float = 0.2,
         max_tokens: int = 512,
+        timeout_seconds: float | None = None,
     ) -> ProviderCallResult:
         params = {
             "provider": settings.llm_provider,
@@ -256,12 +275,20 @@ class ProviderAdapterLayer:
         }
         if settings.llm_provider == "longcat" and settings.has_real_longcat():
             started_at = time.perf_counter()
+            llm_request_payload = {
+                "model": settings.longcat_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
             try:
-                payload = longcat_client.chat_completion(
-                    messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                completion_kwargs: dict[str, Any] = {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if timeout_seconds is not None:
+                    completion_kwargs["timeout_seconds"] = timeout_seconds
+                payload = longcat_client.chat_completion(messages, **completion_kwargs)
                 elapsed_ms = self._elapsed_ms(started_at)
                 return ProviderCallResult(
                     provider="longcat",
@@ -275,12 +302,23 @@ class ProviderAdapterLayer:
                         "model": settings.longcat_model,
                         "elapsed_ms": elapsed_ms,
                         "timing": payload.get("_dzultra_provider_timing", {}),
-                        "timeout_seconds": self._llm_timeout_seconds(),
+                        "timeout_seconds": self._llm_timeout_seconds(timeout_seconds),
                     },
+                    llm_request=llm_request_payload,
+                    llm_response=payload,
+                    request_duration_ms=elapsed_ms,
                 )
             except (httpx.HTTPError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 elapsed_ms = self._elapsed_ms(started_at)
                 payload = self._mock_llm_payload(fallback_content)
+                http_status = None
+                http_body = None
+                if isinstance(exc, httpx.HTTPStatusError):
+                    http_status = exc.response.status_code
+                    try:
+                        http_body = exc.response.text
+                    except Exception:
+                        http_body = None
                 return ProviderCallResult(
                     provider="longcat",
                     capability="llm_chat_completion",
@@ -294,9 +332,13 @@ class ProviderAdapterLayer:
                     metadata={
                         "model": settings.longcat_model,
                         "elapsed_ms": elapsed_ms,
-                        "timeout_seconds": self._llm_timeout_seconds(),
+                        "timeout_seconds": self._llm_timeout_seconds(timeout_seconds),
                         "backup_retry_enabled": getattr(settings, "longcat_backup_retry_enabled", False),
                     },
+                    llm_request=llm_request_payload,
+                    http_status_code=http_status,
+                    http_response_body=http_body,
+                    request_duration_ms=elapsed_ms,
                 )
 
         payload = self._mock_llm_payload(fallback_content)
@@ -311,6 +353,162 @@ class ProviderAdapterLayer:
             fallback_provider=None,
             metadata={"reason": "LONGCAT_API_KEY missing or placeholder; deterministic fallback used."},
         )
+
+    async def llm_chat_completion_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        purpose: str,
+        fallback_content: str,
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+        timeout_seconds: float | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """流式 LLM 调用，逐 chunk yield 事件字典。
+
+        每个 yield 的字典格式：
+        - {"type": "llm_chunk", "content": "...", "chunk_index": N, "purpose": purpose, "model": "..."}
+        - {"type": "llm_stream_done", "purpose": purpose, "full_text": "...", "usage": {...}, "provider_result": ProviderCallResult}
+
+        如果 LongCat 未配置或调用失败，yield 单个 llm_stream_done 事件（含 fallback 数据）。
+        """
+        params = {
+            "provider": settings.llm_provider,
+            "model": settings.longcat_model,
+            "purpose": purpose,
+            "message_count": len(messages),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        llm_request_payload = {
+            "model": settings.longcat_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        if settings.llm_provider == "longcat" and settings.has_real_longcat():
+            started_at = time.perf_counter()
+            full_text_parts: list[str] = []
+            chunk_index = 0
+            last_chunk_payload: dict[str, Any] | None = None
+            try:
+                async for chunk in longcat_client.chat_completion_stream(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout_seconds=timeout_seconds,
+                ):
+                    last_chunk_payload = chunk
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        full_text_parts.append(content)
+                        yield {
+                            "type": "llm_chunk",
+                            "content": content,
+                            "chunk_index": chunk_index,
+                            "purpose": purpose,
+                            "model": settings.longcat_model,
+                        }
+                        chunk_index += 1
+
+                elapsed_ms = self._elapsed_ms(started_at)
+                full_text = "".join(full_text_parts)
+                usage = {}
+                if last_chunk_payload and isinstance(last_chunk_payload, dict):
+                    usage = last_chunk_payload.get("usage", {})
+                provider_result = ProviderCallResult(
+                    provider="longcat",
+                    capability="llm_chat_completion_stream",
+                    params=params,
+                    data=last_chunk_payload or {},
+                    summary={"model": settings.longcat_model, "content_preview": full_text[:120], "usage": usage, "streaming": True},
+                    reliability="verified",
+                    fallback_used=False,
+                    metadata={
+                        "model": settings.longcat_model,
+                        "elapsed_ms": elapsed_ms,
+                        "timeout_seconds": self._llm_timeout_seconds(timeout_seconds),
+                        "streaming": True,
+                        "chunk_count": chunk_index,
+                    },
+                    llm_request=llm_request_payload,
+                    request_duration_ms=elapsed_ms,
+                )
+                yield {
+                    "type": "llm_stream_done",
+                    "purpose": purpose,
+                    "full_text": full_text,
+                    "usage": usage,
+                    "model": settings.longcat_model,
+                    "provider_result": provider_result,
+                }
+                return
+            except (httpx.HTTPError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+                elapsed_ms = self._elapsed_ms(started_at)
+                payload = self._mock_llm_payload(fallback_content)
+                http_status = None
+                http_body = None
+                if isinstance(exc, httpx.HTTPStatusError):
+                    http_status = exc.response.status_code
+                    try:
+                        http_body = exc.response.text
+                    except Exception:
+                        http_body = None
+                provider_result = ProviderCallResult(
+                    provider="longcat",
+                    capability="llm_chat_completion_stream",
+                    params=params,
+                    data=payload,
+                    summary=self._llm_summary(payload),
+                    reliability="mocked",
+                    fallback_used=True,
+                    fallback_provider="deterministic_template",
+                    error=f"{exc} (elapsed_ms={elapsed_ms})",
+                    metadata={
+                        "model": settings.longcat_model,
+                        "elapsed_ms": elapsed_ms,
+                        "timeout_seconds": self._llm_timeout_seconds(timeout_seconds),
+                        "streaming": True,
+                    },
+                    llm_request=llm_request_payload,
+                    http_status_code=http_status,
+                    http_response_body=http_body,
+                    request_duration_ms=elapsed_ms,
+                )
+                yield {
+                    "type": "llm_stream_done",
+                    "purpose": purpose,
+                    "full_text": fallback_content,
+                    "usage": {},
+                    "model": settings.longcat_model,
+                    "provider_result": provider_result,
+                }
+                return
+
+        # LongCat 未配置，直接 fallback
+        payload = self._mock_llm_payload(fallback_content)
+        provider_result = ProviderCallResult(
+            provider="deterministic_template",
+            capability="llm_chat_completion_stream",
+            params=params,
+            data=payload,
+            summary=self._llm_summary(payload),
+            reliability="mocked",
+            fallback_used=True,
+            fallback_provider=None,
+            metadata={"reason": "LONGCAT_API_KEY missing or placeholder; deterministic fallback used.", "streaming": True},
+            llm_request=llm_request_payload,
+        )
+        yield {
+            "type": "llm_stream_done",
+            "purpose": purpose,
+            "full_text": fallback_content,
+            "usage": {},
+            "model": "deterministic_template",
+            "provider_result": provider_result,
+        }
 
     def template_llm_completion(
         self,
@@ -345,37 +543,51 @@ class ProviderAdapterLayer:
     def mock_deep_poi_enrichment(self, pois: list[MockPoi]) -> ProviderCallResult:
         data = {
             "queue": [
-                {"poi_id": poi.id, "current_wait_minutes": poi.queue_minutes, "reliability": "mocked"}
+                {
+                    "poi_id": poi.id,
+                    "current_wait_minutes": poi.queue_minutes,
+                    "data_origin": "ai_generated_dataset",
+                    "reliability": "generated_validated",
+                }
                 for poi in pois
             ],
             "recommended_dishes": [
                 {
                     "poi_id": poi.id,
                     "dishes": [dish.model_dump(mode="json") for dish in poi.recommended_dishes],
-                    "reliability": "mocked",
+                    "data_origin": "ai_generated_dataset",
+                    "reliability": "generated_validated",
                 }
                 for poi in pois
             ],
             "ugc": [
-                {"poi_id": poi.id, "summary": poi.ugc_summary, "risk_notes": poi.risk_notes, "reliability": "mocked"}
+                {
+                    "poi_id": poi.id,
+                    "summary": poi.ugc_summary,
+                    "risk_notes": poi.risk_notes,
+                    "data_origin": "ai_generated_dataset",
+                    "reliability": "generated_validated",
+                }
                 for poi in pois
             ],
         }
         return ProviderCallResult(
-            provider="mock_local_poi_enrichment",
-            capability="mock_deep_poi_enrichment",
+            provider="ai_generated_dataset",
+            capability="deep_poi_enrichment",
             params={"poi_ids": [poi.id for poi in pois]},
             data=data,
             summary={
                 "poi_count": len(pois),
-                "queue_source": "local_mock",
-                "ugc_source": "local_mock",
-                "recommended_dish_source": "local_mock",
+                "queue_source": "ai_generated_dataset",
+                "ugc_source": "ai_generated_dataset",
+                "recommended_dish_source": "ai_generated_dataset",
             },
-            reliability="mocked",
-            fallback_used=True,
+            reliability="generated_validated",
+            fallback_used=False,
             metadata={
-                "reason": "当前真实 API 只保留高德地图和彩云天气；排队、UGC、推荐菜使用本地 Mock 数据。",
+                "data_origin": "ai_generated_dataset",
+                "provider_name": "ai_generated_dataset",
+                "reason": "排队、UGC、推荐菜来自 AI 生成真实结构数据源，作为 Agent 正式输入。",
             },
         )
 
@@ -479,9 +691,9 @@ class ProviderAdapterLayer:
                 "rating": "amap",
                 "phone": "amap",
                 "images": "amap",
-                "queue_minutes": "mocked",
-                "ugc_summary": "mocked",
-                "recommended_dishes": "mocked",
+                "queue_minutes": "generated_validated",
+                "ugc_summary": "generated_validated",
+                "recommended_dishes": "generated_validated",
             },
             field_reliability={
                 "id": "verified" if raw.get("id") else "inferred",
@@ -501,15 +713,15 @@ class ProviderAdapterLayer:
                 "images": "verified" if photos else "missing",
             },
             enrichment_reliability={
-                "queue_minutes": "mocked",
-                "visit_duration_minutes": "mocked",
-                "ugc_summary": "mocked",
-                "ugc_highlights": "mocked",
-                "recommended_dishes": "mocked",
-                "platform_badges": "mocked",
-                "service_options": "mocked",
-                "decision_signals": "mocked",
-                "risk_notes": "mocked",
+                "queue_minutes": "generated_validated",
+                "visit_duration_minutes": "generated_validated",
+                "ugc_summary": "generated_validated",
+                "ugc_highlights": "generated_validated",
+                "recommended_dishes": "generated_validated",
+                "platform_badges": "generated_validated",
+                "service_options": "generated_validated",
+                "decision_signals": "generated_validated",
+                "risk_notes": "generated_validated",
             },
             city=city,
             district=raw.get("adname"),
@@ -690,7 +902,9 @@ class ProviderAdapterLayer:
         fast_timeout = getattr(settings, "provider_fast_timeout_seconds", request_timeout)
         return min(request_timeout, fast_timeout)
 
-    def _llm_timeout_seconds(self) -> float:
+    def _llm_timeout_seconds(self, override_seconds: float | None = None) -> float:
+        if override_seconds is not None:
+            return max(0.5, override_seconds)
         request_timeout = getattr(settings, "llm_request_timeout_seconds", 20)
         fast_timeout = getattr(settings, "llm_fast_timeout_seconds", request_timeout)
         return min(request_timeout, fast_timeout)

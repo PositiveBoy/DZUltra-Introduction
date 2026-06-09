@@ -73,17 +73,23 @@ def llm_smoke_test(request: LlmSmokeTestRequest) -> LlmSmokeTestResponse:
     if not longcat_client.is_configured():
         raise HTTPException(status_code=503, detail="LONGCAT_API_KEY is not configured.")
 
-    payload = longcat_client.chat_completion(
-        [
-            {
-                "role": "system",
-                "content": "你是 DZUltra 的 V3 接入测试助手。用一句中文回答，不要输出敏感信息。",
-            },
-            {"role": "user", "content": request.message},
-        ],
-        temperature=0,
-        max_tokens=request.max_tokens,
-    )
+    try:
+        payload = longcat_client.chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": "你是 DZUltra 的 V3 接入测试助手。用一句中文回答，不要输出敏感信息。",
+                },
+                {"role": "user", "content": request.message},
+            ],
+            temperature=0,
+            max_tokens=request.max_tokens,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"LongCat smoke test timed out or failed: {type(exc).__name__}. Runtime fallback remains available in Trace.",
+        ) from exc
     content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
     usage = payload.get("usage", {})
     return LlmSmokeTestResponse(

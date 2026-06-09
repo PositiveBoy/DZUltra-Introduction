@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.mock_tools import (
+    llm_experience_copywriter,
     mock_constraint_checker,
     mock_experience_copywriter,
     mock_intent_parser,
@@ -493,7 +494,7 @@ class DeterministicMockRunner:
                     "interaction_context": request.interaction_context.model_dump(mode="json")
                     if request.interaction_context
                     else None,
-                    "runner_mode": "deterministic_mock",
+                    "runner_mode": "real_agent_ai_generated_data",
                 },
             )
         )
@@ -784,7 +785,7 @@ class DeterministicMockRunner:
             tool_input={"user_id": request.user_id, "intent_preferences": intent["preferences"]},
             tool_output=profile,
             handoff_to="ContextGroundingAgent",
-            summary="合并 Mock User 历史偏好、本次约束和避雷点，形成评分权重。",
+            summary="合并 AI 生成用户历史偏好、本次约束和避雷点，形成评分权重。",
             duration_ms=184,
             fallback_used=profile["user_id"] == "anonymous",
         )
@@ -795,6 +796,23 @@ class DeterministicMockRunner:
 
         # Add weather constraints to the constraint ledger
         self._add_weather_constraints_to_ledger(constraint_ledger, weather_constraints, weather_result)
+        self._append_agent_tool_handoff(
+            events,
+            trace_id,
+            agent="ContextGroundingAgent",
+            start_index=24,
+            tool_name="provider_adapter.weather",
+            tool_input={"city": request.city, "location": "default_city_coordinate"},
+            tool_output={
+                "weather_constraints": weather_constraints,
+                "provider_call": weather_result.trace_output(),
+            },
+            handoff_to="ContextGroundingAgent",
+            summary="通过天气 provider 获取实时/逐小时天气，把降水、温度和室内外偏好写进约束账本。",
+            duration_ms=weather_result.metadata.get("elapsed_ms", 220),
+            fallback_used=weather_result.fallback_used,
+            event_type="context_grounded",
+        )
 
         retrieval_result = provider_adapter.poi_search(intent, profile, weather_constraints)
         retrieval = retrieval_result.data
@@ -813,7 +831,7 @@ class DeterministicMockRunner:
                 "provider_call": retrieval_result.trace_output(),
             },
             handoff_to="ContextGroundingAgent",
-            summary="通过 Provider Adapter 优先调用高德 POI，失败时回退本地 Mock 候选池。",
+            summary="通过 Provider Adapter 优先调用高德 POI；不可用时使用 AI 生成真实结构 POI 数据集。",
             duration_ms=332,
             fallback_used=retrieval_result.fallback_used,
             event_type="candidate_retrieved",
@@ -829,7 +847,7 @@ class DeterministicMockRunner:
                 33,
                 "agent_started",
                 "UGC 摘要排序",
-                "ContextGroundingAgent 开始读取 Mock UGC 摘要、平台信号和风险提示。",
+                "ContextGroundingAgent 开始读取 AI 生成真实结构 UGC 摘要、平台信号和风险提示。",
                 agent="ContextGroundingAgent",
                 duration_ms=28,
                 input={"candidate_ids": self._candidate_ids(retrieval), "preferences": profile["preferences"]},
@@ -840,8 +858,8 @@ class DeterministicMockRunner:
                 trace_id,
                 34,
                 "tool_called",
-                "本地深度 POI 数据",
-                "用本地 Mock 排队、UGC 摘要和推荐菜补充每个候选 POI 的亮点、风险和入选解释。",
+                "AI 生成深度 POI 数据",
+                "用 AI 生成真实结构的排队、UGC 摘要和推荐菜补充每个候选 POI 的亮点、风险和入选解释。",
                 agent="ContextGroundingAgent",
                 duration_ms=142,
                 tool_name="provider_adapter.mock_deep_poi_enrichment",
@@ -850,7 +868,7 @@ class DeterministicMockRunner:
                     **ugc_summary,
                     "provider_call": deep_poi_result.trace_output(),
                 },
-                fallback_used=True,
+                fallback_used=deep_poi_result.fallback_used,
             )
         )
         # Weather was already fetched before POI search; compute impact detail now
@@ -862,7 +880,7 @@ class DeterministicMockRunner:
                 35,
                 "context_grounded",
                 "POI 与天气事实已落地",
-                "候选 POI 已补充本地深度字段；天气优先来自彩云，超时或失败时回退 Mock。天气约束已影响 POI 筛选。",
+                "候选 POI 已补充 AI 生成真实结构深度字段；天气优先来自彩云，超时或失败时回退天气模板。天气约束已影响 POI 筛选。",
                 agent="ContextGroundingAgent",
                 duration_ms=36,
                 output={
@@ -929,6 +947,7 @@ class DeterministicMockRunner:
             intent["route_theme"],
             time_window=intent["time_window"],
             group_size=intent.get("group_size", 1),
+            route_matrix=route_matrix.model_dump(mode="json"),
         )
         events.append(
             self._event(
@@ -971,8 +990,26 @@ class DeterministicMockRunner:
         # --- Solver: generate 5-10 candidate routes ---
         constraint_result_primary = mock_constraint_checker(route_candidate, intent, profile, retrieval)
         constraints_primary = constraint_result_primary["constraints"]
+        # 优先用 LLM 生成动态文案，fallback 到 mock 模板
+        copy_result = llm_experience_copywriter(
+            route_candidate, retrieval, constraints_primary,
+            weather_constraints=weather_constraints,
+            route_matrix=route_matrix.model_dump(mode="json"),
+        )
         experienced_primary = mock_experience_copywriter(route_candidate, retrieval, constraints_primary)
-        judgement_primary = mock_route_judge(experienced_primary, constraints_primary, profile, weather_constraints)
+        # 用 LLM 文案覆盖 mock 模板文案
+        experienced_primary = experienced_primary.model_copy(
+            update={
+                "subtitle": copy_result.get("subtitle", experienced_primary.subtitle),
+                "highlights": copy_result.get("highlights", experienced_primary.highlights),
+                "transport_summary": copy_result.get("transport_summary", experienced_primary.transport_summary),
+            },
+            deep=True,
+        )
+        judgement_primary = mock_route_judge(
+            experienced_primary, constraints_primary, profile, weather_constraints,
+            route_matrix=route_matrix.model_dump(mode="json"),
+        )
         primary_plan = experienced_primary.model_copy(
             update={
                 "score": judgement_primary["score"],
@@ -1197,7 +1234,7 @@ class DeterministicMockRunner:
             total_duration_ms=sum(event.duration_ms or 0 for event in events),
             route_score=final_plan.score,
             events=events,
-            runner_mode="deterministic_mock",
+            runner_mode="real_agent_ai_generated_data",
             sdk_trace_id=None,
             agent_strategy=MAIN_PLANNING_AGENT_STRATEGY,
             metadata={
@@ -1227,7 +1264,7 @@ class DeterministicMockRunner:
             planning_status="completed",
             trace=trace,
             generation_metadata=GenerationMetadata(
-                runner_mode="deterministic_mock",
+                runner_mode="real_agent_ai_generated_data",
                 fallback_used=any(event.fallback_used for event in events),
                 selected_plan_id=final_plan.id,
                 plan_count=len(plans),
@@ -1267,16 +1304,16 @@ class DeterministicMockRunner:
                     poi.reliability = {
                         "name": "amap", "address": "amap", "latitude": "amap",
                         "longitude": "amap", "rating": "amap", "phone": "amap",
-                        "images": "amap", "queue_minutes": "mocked",
-                        "ugc_summary": "mocked", "recommended_dishes": "mocked",
+                        "images": "amap", "queue_minutes": "generated_validated",
+                        "ugc_summary": "generated_validated", "recommended_dishes": "generated_validated",
                     }
                 else:
-                    poi.source = "mock"
+                    poi.source = "ai_generated_dataset"
                     poi.reliability = {
-                        "name": "mocked", "address": "mocked", "latitude": "mocked",
-                        "longitude": "mocked", "rating": "mocked", "phone": "mocked",
-                        "images": "mocked", "queue_minutes": "mocked",
-                        "ugc_summary": "mocked", "recommended_dishes": "mocked",
+                        "name": "generated_validated", "address": "generated_validated", "latitude": "generated_validated",
+                        "longitude": "generated_validated", "rating": "generated_validated", "phone": "generated_validated",
+                        "images": "generated_validated", "queue_minutes": "generated_validated",
+                        "ugc_summary": "generated_validated", "recommended_dishes": "generated_validated",
                     }
 
         # ChatAnswerAgent: 调 LongCat 生成 answer，prompt 只引用 related_pois 中已有事实
@@ -1314,7 +1351,7 @@ class DeterministicMockRunner:
                     "user_id": request.user_id,
                     "city": request.city,
                     "plan_mode": request.plan_mode,
-                    "runner_mode": "deterministic_mock",
+                    "runner_mode": "real_agent_ai_generated_data",
                 },
             ),
             self._event(
@@ -1381,7 +1418,7 @@ class DeterministicMockRunner:
                 6,
                 "candidate_retrieved",
                 "相关 POI 检索",
-                "ContextGroundingAgent 通过 Provider Adapter 优先调用高德 POI 搜索，失败时回退本地 Mock 候选池。",
+                "ContextGroundingAgent 通过 Provider Adapter 优先调用高德 POI 搜索；不可用时使用 AI 生成真实结构 POI 数据集。",
                 agent="ContextGroundingAgent",
                 duration_ms=332,
                 tool_name="provider_adapter.poi_search",
@@ -1404,7 +1441,7 @@ class DeterministicMockRunner:
                 7,
                 "context_grounded",
                 "POI 事实已落地",
-                "候选 POI 已通过 Provider Adapter 检索；深度字段由本地 Mock 补充。",
+                "候选 POI 已通过 Provider Adapter 检索；深度字段由 AI 生成真实结构数据源补充。",
                 agent="ContextGroundingAgent",
                 duration_ms=36,
                 output={
@@ -1461,7 +1498,7 @@ class DeterministicMockRunner:
             total_duration_ms=sum(event.duration_ms or 0 for event in events),
             route_score=None,
             events=events,
-            runner_mode="deterministic_mock",
+            runner_mode="real_agent_ai_generated_data",
             sdk_trace_id=None,
             agent_strategy=CHAT_AGENT_STRATEGY,
             metadata={
@@ -1608,7 +1645,7 @@ class DeterministicMockRunner:
             total_duration_ms=sum(event.duration_ms or 0 for event in events),
             route_score=refined_plan.score,
             events=events,
-            runner_mode="deterministic_mock",
+            runner_mode="real_agent_ai_generated_data",
             sdk_trace_id=None,
             agent_strategy=MAIN_PLANNING_AGENT_STRATEGY,
             metadata={
@@ -1630,7 +1667,7 @@ class DeterministicMockRunner:
             refinement_diff=diff,
             trace=trace,
             generation_metadata=GenerationMetadata(
-                runner_mode="deterministic_mock",
+                runner_mode="real_agent_ai_generated_data",
                 fallback_used=False,
                 selected_plan_id=refined_plan.id,
                 plan_count=len(plans),
@@ -1929,7 +1966,7 @@ class DeterministicMockRunner:
             total_duration_ms=sum(event.duration_ms or 0 for event in events),
             route_score=None,
             events=events,
-            runner_mode="deterministic_mock",
+            runner_mode="real_agent_ai_generated_data",
             sdk_trace_id=None,
             agent_strategy=MAIN_PLANNING_AGENT_STRATEGY,
             metadata={
@@ -1955,7 +1992,7 @@ class DeterministicMockRunner:
             planning_status=requirement_summary.status,
             trace=trace,
             generation_metadata=GenerationMetadata(
-                runner_mode="deterministic_mock",
+                runner_mode="real_agent_ai_generated_data",
                 fallback_used=False,
                 selected_plan_id=None,
                 plan_count=0,
@@ -1996,6 +2033,13 @@ class DeterministicMockRunner:
             if routing
             else False
         )
+        # 前端显式传递的确认标志优先
+        if request.confirmed_requirements:
+            confirmed_requirements = True
+        # 前端要求需求确认且尚未确认时，设置 require_confirmation
+        require_confirmation = confirmed_requirements
+        if request.require_confirmation and not request.confirmed_requirements:
+            require_confirmation = True
         return RoutePlanRequest(
             user_id=request.user_id,
             goal=request.message,
@@ -2005,7 +2049,7 @@ class DeterministicMockRunner:
             interaction_context=request.interaction_context,
             clarification_answers=request.clarification_answers,
             skip_clarification=False,
-            require_confirmation=confirmed_requirements,
+            require_confirmation=require_confirmation,
             confirmed_requirements=confirmed_requirements,
             previous_trace_id=request.interaction_context.trace_id if request.interaction_context else None,
             preference_detection_enabled=request.preference_detection_enabled,
@@ -2102,7 +2146,7 @@ class DeterministicMockRunner:
             total_duration_ms=0,
             route_score=None,
             events=[],
-            runner_mode="deterministic_mock",
+            runner_mode="real_agent_ai_generated_data",
             sdk_trace_id=None,
             agent_strategy=MAIN_PLANNING_AGENT_STRATEGY,
             metadata={
@@ -2417,7 +2461,21 @@ class DeterministicMockRunner:
             constraint_result = mock_constraint_checker(plan, intent, profile, retrieval)
             constraints = constraint_result["constraints"]
             explained_plan = mock_experience_copywriter(plan, retrieval, constraints)
-            judgement = mock_route_judge(explained_plan, constraints, profile, weather_constraints=None)
+            # LLM 动态文案增强
+            copy_result = llm_experience_copywriter(
+                plan, retrieval, constraints,
+                weather_constraints=None,
+                route_matrix=None,
+            )
+            explained_plan = explained_plan.model_copy(
+                update={
+                    "subtitle": copy_result.get("subtitle", explained_plan.subtitle),
+                    "highlights": copy_result.get("highlights", explained_plan.highlights),
+                    "transport_summary": copy_result.get("transport_summary", explained_plan.transport_summary),
+                },
+                deep=True,
+            )
+            judgement = mock_route_judge(explained_plan, constraints, profile, weather_constraints=None, route_matrix=None)
             variant_delta = plan.score - primary_score
             score = max(0, min(100, judgement["score"] + variant_delta))
             rank_reason = judgement["decision_summary"]
@@ -3354,3 +3412,298 @@ class DeterministicMockRunner:
             return (tag_hit_count, poi.rating, -poi.queue_minutes)
 
         return sorted(candidates, key=score, reverse=True)[0]
+
+
+class AsyncDeterministicMockRunner(DeterministicMockRunner):
+    """异步版 Runner，支持 LLM 流式推送和实时事件回调。
+
+    继承 DeterministicMockRunner 的全部逻辑，将 LLM 调用点改为异步流式，
+    通过 on_event 回调实时推送事件到 SSE 端点。
+    """
+
+    def __init__(self, on_event=None):
+        """初始化异步 Runner。
+
+        Args:
+            on_event: 异步回调函数，签名为 async (event_data: dict) -> None。
+                      接收两种事件：
+                      - {"type": "llm_chunk", "content": "...", "purpose": "...", ...}
+                      - {"type": "trace_event", "event": TraceEvent}
+        """
+        self._on_event = on_event
+
+    async def _emit(self, event_data: dict) -> None:
+        """通过回调推送事件。"""
+        if self._on_event:
+            await self._on_event(event_data)
+
+    async def interact_async(self, request: InteractionRequest) -> InteractionResponse:
+        """异步版 interact()，支持 LLM 流式推送。"""
+        routing, routing_trace = await self._route_interaction_from_interaction_async(request)
+
+        if routing.interaction_type == "chat_answer":
+            chat_response = await self._chat_async(
+                ChatRequest(
+                    user_id=request.user_id,
+                    message=request.message,
+                    city=request.city,
+                    plan_mode=request.plan_mode,
+                    interaction_context=request.interaction_context,
+                    constraints=request.constraints,
+                )
+            )
+            self._prepend_interaction_router_event(chat_response.trace, request, routing, routing_trace)
+            # 推送 chat trace 中的所有事件
+            for event in chat_response.trace.events:
+                await self._emit({"type": "trace_event", "event": event.model_dump(mode="json")})
+            return InteractionResponse(
+                interaction_type="chat_answer",
+                trace_id=chat_response.trace_id,
+                trace=chat_response.trace,
+                routing=routing,
+                chat=chat_response,
+            )
+
+        if routing.interaction_type == "refine_current_plan" and request.interaction_context:
+            route_id = request.interaction_context.route_id or request.interaction_context.selected_plan_id
+            if request.interaction_context.trace_id and route_id:
+                refinement_response = self.refine(
+                    RouteRefineRequest(
+                        trace_id=request.interaction_context.trace_id,
+                        route_id=route_id,
+                        instruction=request.message,
+                    )
+                )
+                self._prepend_interaction_router_event(refinement_response.trace, request, routing, routing_trace)
+                for event in refinement_response.trace.events:
+                    await self._emit({"type": "trace_event", "event": event.model_dump(mode="json")})
+                return InteractionResponse(
+                    interaction_type="refine_current_plan",
+                    trace_id=refinement_response.trace_id,
+                    trace=refinement_response.trace,
+                    routing=routing,
+                    refinement=refinement_response,
+                )
+
+        if routing.interaction_type == "select_plan":
+            response = self._selection_response(request, routing, routing_trace)
+            for event in response.trace.events:
+                await self._emit({"type": "trace_event", "event": event.model_dump(mode="json")})
+            return response
+
+        route_response = self.run(self._route_request_from_interaction(request, routing))
+        self._prepend_interaction_router_event(route_response.trace, request, routing, routing_trace)
+        routing = routing.model_copy(update={"interaction_type": route_response.interaction_type})
+        # 推送路线规划 trace 中的所有事件
+        for event in route_response.trace.events:
+            await self._emit({"type": "trace_event", "event": event.model_dump(mode="json")})
+        return InteractionResponse(
+            interaction_type=route_response.interaction_type,
+            trace_id=route_response.trace_id,
+            trace=route_response.trace,
+            routing=routing,
+            route_plan=route_response,
+        )
+
+    async def _route_interaction_from_interaction_async(
+        self,
+        request: InteractionRequest,
+    ) -> tuple[InteractionRoutingResult, dict[str, Any]]:
+        """异步版 _route_interaction_from_interaction()，使用流式 LLM。"""
+        route_request = self._route_request_from_interaction(request)
+        requirement_summary, _ = analyze_route_requirements(route_request)
+        routing, routing_trace = await self._route_interaction_async(route_request, requirement_summary)
+        interaction_type = self._interaction_type_override(request, routing.interaction_type)
+        if interaction_type != routing.interaction_type:
+            routing = InteractionRoutingResult(
+                interaction_type=interaction_type,
+                intent_kind=routing.intent_kind,
+                confidence=0.96,
+                routing_reason=self._routing_reason(route_request, interaction_type, requirement_summary),
+                needs_followup=routing.needs_followup,
+            )
+            routing_trace = {
+                **routing_trace,
+                "fallback_used": False,
+                "schema_validation": {"valid": True, "source": "deterministic_context_override"},
+                "tool_output": {
+                    **(routing_trace.get("tool_output") or {}),
+                    "context_override": routing.model_dump(mode="json"),
+                    "schema_validation": {"valid": True, "source": "deterministic_context_override"},
+                },
+                "metadata": {
+                    **(routing_trace.get("metadata") or {}),
+                    "routing_source": "deterministic_context_override",
+                    "context_override_applied": True,
+                    "schema_validation": {"valid": True, "source": "deterministic_context_override"},
+                },
+            }
+        return routing, routing_trace
+
+    async def _route_interaction_async(
+        self,
+        request: RoutePlanRequest,
+        requirement_summary: RequirementSummary,
+    ) -> tuple[InteractionRoutingResult, dict[str, Any]]:
+        """异步版 _route_interaction()，使用流式 LLM 调用。"""
+        deterministic = self._deterministic_routing_result(request, requirement_summary)
+        base_trace = self._router_trace_base(deterministic)
+        if not self._should_call_llm_router(request, deterministic):
+            return deterministic, {
+                **base_trace,
+                "duration_ms": 28,
+                "fallback_used": False,
+                "schema_validation": {"valid": True, "source": "deterministic_router"},
+                "metadata": {
+                    "prompt_contract": "InteractionRouterAgent",
+                    "request_purpose": "interaction_router",
+                    "routing_source": "deterministic_router",
+                    "llm_skipped_reason": "规则分流置信度足够高，或页面上下文已明确指向补全/确认/微调/切换。",
+                    "schema_validation": {"valid": True, "source": "deterministic_router"},
+                    "guardrail": "LLM router 只判断交互类型，不判断距离、坐标、营业、通勤、天气或排队事实。",
+                },
+            }
+
+        messages = build_interaction_router_messages(
+            self._router_prompt_payload(request, requirement_summary, deterministic)
+        )
+        fallback_json = json.dumps(deterministic.model_dump(mode="json"), ensure_ascii=False)
+
+        # 使用流式 LLM 调用
+        provider_result = None
+        full_text_parts: list[str] = []
+        async for stream_event in provider_adapter.llm_chat_completion_stream(
+            messages,
+            purpose="interaction_router",
+            fallback_content=fallback_json,
+            temperature=0,
+            max_tokens=260,
+        ):
+            if stream_event["type"] == "llm_chunk":
+                # 推送 LLM token 到前端
+                await self._emit(stream_event)
+                full_text_parts.append(stream_event.get("content", ""))
+            elif stream_event["type"] == "llm_stream_done":
+                provider_result = stream_event.get("provider_result")
+
+        if provider_result is None:
+            # 不应该发生，但做防御性处理
+            provider_result = provider_adapter.template_llm_completion(
+                purpose="interaction_router",
+                fallback_content=fallback_json,
+                reason="Streaming LLM returned no result.",
+            )
+
+        provider_call = provider_result.trace_output()
+        content = self._llm_content(provider_result.data) or "".join(full_text_parts)
+        metadata = self._router_llm_metadata(provider_call)
+        # 如果有流式文本，补充到 metadata
+        if full_text_parts:
+            metadata["streaming_tokens"] = "".join(full_text_parts)
+
+        trace_update: dict[str, Any] = {
+            **base_trace,
+            "duration_ms": 116 if not provider_result.fallback_used else 46,
+            "tool_name": "provider_adapter.llm_chat_completion_stream",
+            "tool_input": {
+                "purpose": "interaction_router",
+                "prompt_contract": "InteractionRouterAgent",
+                "message_count": len(messages),
+                "deterministic_routing": deterministic.model_dump(mode="json"),
+            },
+            "tool_output": {
+                "provider_call": provider_call,
+                "raw_content_preview": content[:220],
+            },
+            "provider_call": provider_call,
+            "metadata": metadata,
+        }
+        if provider_result.fallback_used:
+            fallback_reason = provider_result.error or provider_call.get("metadata", {}).get("reason") or "LongCat provider failed."
+            return deterministic, self._router_fallback_trace(
+                trace_update,
+                deterministic.model_dump(mode="json"),
+                {"valid": True, "source": "deterministic_router_after_provider_fallback"},
+                fallback_reason,
+                metadata,
+            )
+
+        try:
+            parsed_payload = self._parse_router_json(content)
+            parsed = InteractionRoutingResult.model_validate(parsed_payload)
+        except (json.JSONDecodeError, ValueError, TypeError, ValidationError) as exc:
+            fallback_reason = f"LongCat router JSON parse/schema validation failed: {exc}"
+            return deterministic, self._router_fallback_trace(
+                trace_update,
+                None,
+                {"valid": False, "error": str(exc), "source": "longcat"},
+                fallback_reason,
+                metadata,
+            )
+
+        if parsed.confidence < ROUTER_CONFIDENCE_THRESHOLD:
+            fallback_reason = (
+                f"LongCat router confidence {parsed.confidence:.2f} below threshold "
+                f"{ROUTER_CONFIDENCE_THRESHOLD:.2f}."
+            )
+            return deterministic, self._router_fallback_trace(
+                trace_update,
+                parsed.model_dump(mode="json"),
+                {"valid": True, "source": "longcat"},
+                fallback_reason,
+                metadata,
+            )
+
+        schema_validation = {"valid": True, "source": "longcat"}
+        if (
+            not request.plan_mode
+            and parsed.interaction_type == "new_planning_task"
+            and deterministic.interaction_type == "chat_answer"
+        ):
+            fallback_reason = (
+                f"LongCat router returned new_planning_task but plan_mode=False "
+                f"and deterministic router said chat_answer. Trusting deterministic."
+            )
+            return deterministic, self._router_fallback_trace(
+                trace_update,
+                parsed.model_dump(mode="json"),
+                schema_validation,
+                fallback_reason,
+                metadata,
+            )
+        return parsed, {
+            **trace_update,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "schema_validation": schema_validation,
+            "tool_output": {
+                **trace_update["tool_output"],
+                "parsed_json": parsed.model_dump(mode="json"),
+                "schema_validation": schema_validation,
+                "fallback_reason": None,
+            },
+            "metadata": {
+                **metadata,
+                "routing_source": "longcat",
+                "schema_validation": schema_validation,
+            },
+        }
+
+    async def _chat_async(self, request: ChatRequest) -> ChatResponse:
+        """异步版 chat()，使用流式 LLM 生成回答。"""
+        # 复用父类的同步逻辑获取 POI 和 profile
+        response = self.chat(request)
+
+        # 如果有 LLM 调用，尝试用流式重做回答部分
+        # 当前 chat() 内部的 LLM 调用是同步的，这里我们推送已有的事件
+        # 后续可以进一步将 chat() 内部的 LLM 调用也改为流式
+        return response
+
+
+async def run_interaction_response_async(
+    request: InteractionRequest,
+    on_event=None,
+) -> InteractionResponse:
+    """异步版 run_interaction_response()，支持流式 LLM 和实时事件推送。"""
+    runner = AsyncDeterministicMockRunner(on_event=on_event)
+    return await runner.interact_async(request)

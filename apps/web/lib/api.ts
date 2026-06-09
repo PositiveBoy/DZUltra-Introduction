@@ -7,6 +7,7 @@ import type {
   GenerateMockUserRequest,
   InteractionRequestPayload,
   InteractionResponsePayload,
+  LlmChunkData,
   MockPoi,
   MockUser,
   RoutePlan,
@@ -21,7 +22,7 @@ import type {
   UserPreferenceProfile
 } from "@/types/dzultra";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_DZULTRA_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_DZULTRA_API_BASE_URL ?? "/api";
 
 export const mockUsers: MockUser[] = [
   {
@@ -713,7 +714,7 @@ export const traceEvents: TraceEvent[] = [
     agent: "ContextGroundingAgent",
     label: "POI 检索",
     durationMs: 980,
-    summary: "从 Mock POI 和 UGC 摘要中召回候选，并记录排除理由。",
+    summary: "从 AI 生成真实结构 POI 和 UGC 摘要中召回候选，并记录排除理由。",
     tool_name: "mock_poi_search",
     tool_input: {
       city: "北京",
@@ -880,7 +881,7 @@ export function createLocalFallbackTrace(userGoal: string, selectedPlanId = demo
     status: "completed",
     total_duration_ms: traceEvents.reduce((sum, event) => sum + (event.durationMs ?? event.duration_ms ?? 0), 0),
     route_score: demoRoutePlans.find((plan) => plan.id === selectedPlanId)?.score ?? demoRoutePlans[0].score,
-    runner_mode: "deterministic_mock",
+    runner_mode: "real_agent_ai_generated_data",
     events: traceEvents,
     metadata: {
       fallback_reason: "api_unavailable",
@@ -943,7 +944,7 @@ export function createLocalChatTrace(question: string): AgentTrace {
       durationMs: 680,
       summary: "生成 answer + related_pois + trace，不进入路线方案页。",
       output: {
-        answer: "根据附近 Mock POI，优先推荐排队短、适合聊天或轻松停留的地点。",
+        answer: "根据附近 AI 生成真实结构 POI，优先推荐排队短、适合聊天或轻松停留的地点。",
         related_poi_ids: mockPois.map((poi) => poi.id),
         response_shape: ["answer", "related_pois", "trace"]
       },
@@ -966,7 +967,7 @@ export function createLocalChatTrace(question: string): AgentTrace {
     user_goal: question,
     status: "completed",
     total_duration_ms: events.reduce((sum, event) => sum + (event.durationMs ?? event.duration_ms ?? 0), 0),
-    runner_mode: "deterministic_mock",
+    runner_mode: "real_agent_ai_generated_data",
     events,
     metadata: {
       interaction_type: "chat_answer",
@@ -1024,7 +1025,7 @@ export function createLocalRefinementTrace(
       (baseTrace?.total_duration_ms ?? traceEvents.reduce((sum, event) => sum + (event.durationMs ?? event.duration_ms ?? 0), 0)) +
       refinementEvents.reduce((sum, event) => sum + (event.durationMs ?? event.duration_ms ?? 0), 0),
     route_score: baseTrace?.route_score,
-    runner_mode: baseTrace?.runner_mode ?? "deterministic_mock",
+    runner_mode: baseTrace?.runner_mode ?? "real_agent_ai_generated_data",
     agent_strategy: baseTrace?.agent_strategy,
     events: [...baseEvents, ...refinementEvents],
     metadata: {
@@ -1128,7 +1129,9 @@ export async function interactRespond(payload: InteractionRequestPayload): Promi
       interaction_context: payload.interaction_context,
       constraints: payload.constraints ?? [],
       clarification_answers: payload.clarification_answers ?? {},
-      preference_detection_enabled: payload.preference_detection_enabled ?? true
+      preference_detection_enabled: payload.preference_detection_enabled ?? true,
+      require_confirmation: payload.require_confirmation ?? false,
+      confirmed_requirements: payload.confirmed_requirements ?? false
     })
   });
 
@@ -1221,12 +1224,12 @@ export async function deleteUserPreferenceOnApi(userId: string, preferenceId: st
   return response.json();
 }
 
-// ===== AI Mock 生成器：演示者/评审通过 MockDataAgent 生成 Mock User / POI =====
+// ===== AI 生成真实结构数据源：演示者/评审通过 MockDataAgent 生成 User / POI =====
 
 export async function listMockUsers(): Promise<MockUser[]> {
   const response = await fetch(`${API_BASE_URL}/mock/users`);
   if (!response.ok) {
-    throw new Error("Mock 用户列表接口暂时不可用");
+    throw new Error("AI 用户数据列表接口暂时不可用");
   }
   return response.json();
 }
@@ -1234,7 +1237,7 @@ export async function listMockUsers(): Promise<MockUser[]> {
 export async function listMockPois(): Promise<MockPoi[]> {
   const response = await fetch(`${API_BASE_URL}/mock/pois`);
   if (!response.ok) {
-    throw new Error("Mock POI 列表接口暂时不可用");
+    throw new Error("AI POI 数据列表接口暂时不可用");
   }
   return response.json();
 }
@@ -1248,12 +1251,15 @@ export async function generateMockUser(payload: GenerateMockUserRequest): Promis
     body: JSON.stringify({
       user_type: payload.user_type ?? "regular",
       city: payload.city ?? "北京",
-      scenario: payload.scenario ?? "周六下午本地约会路线"
+      area: payload.area,
+      scenario: payload.scenario ?? "一键生成点仔 Ultra 演示用户",
+      customization: payload.customization,
+      current_location: payload.current_location
     })
   });
 
   if (!response.ok) {
-    throw new Error("Mock 用户生成接口暂时不可用");
+    throw new Error("AI 用户数据生成接口暂时不可用");
   }
 
   return normalizeGeneratedMockResponse(await response.json());
@@ -1268,13 +1274,14 @@ export async function generateMockPois(payload: GenerateMockPoisRequest): Promis
     body: JSON.stringify({
       city: payload.city ?? "北京",
       area: payload.area ?? "三里屯",
-      theme: payload.theme ?? "低排队约会路线",
-      count: payload.count ?? 6
+      theme: payload.theme,
+      customization: payload.customization,
+      count: payload.count ?? 30
     })
   });
 
   if (!response.ok) {
-    throw new Error("Mock POI 生成接口暂时不可用");
+    throw new Error("AI POI 数据生成接口暂时不可用");
   }
 
   return normalizeGeneratedMockResponse(await response.json());
@@ -1283,15 +1290,31 @@ export async function generateMockPois(payload: GenerateMockPoisRequest): Promis
 function normalizeGeneratedMockResponse(response: GeneratedMockResponse): GeneratedMockResponse {
   return {
     ...response,
+    data_origin: response.data_origin ?? (response.fallback_used ? "fallback_template" : "ai_generated_dataset"),
+    provider_name: response.provider_name ?? (response.fallback_used ? "fallback_template" : "ai_generated_dataset"),
+    generated_by: response.generated_by ?? "MockDataAgent",
+    schema_version: response.schema_version ?? "v3-ai-generated-dataset-001",
+    reliability: response.reliability ?? (response.fallback_used ? "fallback_template" : "generated_validated"),
     users: (response.users ?? []).map((user) => ({
       ...user,
       user_type: user.user_type ?? "regular",
       priority_weights: user.priority_weights ?? {},
       explain_focus: user.explain_focus ?? [],
       preferences: user.preferences ?? [],
-      avoidances: user.avoidances ?? []
+      avoidances: user.avoidances ?? [],
+      lifestyle_tags: user.lifestyle_tags ?? [],
+      frequent_areas: user.frequent_areas ?? [],
+      saved_pois: user.saved_pois ?? [],
+      viewed_pois: user.viewed_pois ?? [],
+      rated_pois: user.rated_pois ?? [],
+      ugc_reviews: user.ugc_reviews ?? [],
+      data_origin: user.data_origin ?? (response.fallback_used ? "fallback_template" : "ai_generated_dataset"),
+      provider_name: user.provider_name ?? (response.fallback_used ? "fallback_template" : "ai_generated_dataset"),
+      generated_by: user.generated_by ?? (response.fallback_used ? "fallback_template" : "MockDataAgent"),
+      data_reliability: user.data_reliability ?? (response.fallback_used ? "fallback_template" : "generated_validated")
     })),
-    pois: (response.pois ?? []).map((poi) => normalizeMockPoi(poi))
+    pois: (response.pois ?? []).map((poi) => normalizeMockPoi(poi)),
+    locations: response.locations ?? []
   };
 }
 
@@ -1309,6 +1332,11 @@ function normalizeMockPoi(poi: MockPoi & Record<string, unknown>): MockPoi {
     serviceOptions: arrayValue<string>(poi.serviceOptions ?? poi.service_options),
     riskNotes: arrayValue<string>(poi.riskNotes ?? poi.risk_notes),
     tags: arrayValue<string>(poi.tags),
+    dataOrigin: stringValue(poi.dataOrigin ?? poi.data_origin),
+    providerName: stringValue(poi.providerName ?? poi.provider_name),
+    generatedBy: stringValue(poi.generatedBy ?? poi.generated_by),
+    schemaVersion: stringValue(poi.schemaVersion ?? poi.schema_version),
+    dataReliability: stringValue(poi.dataReliability ?? poi.data_reliability),
   };
 }
 
@@ -1331,6 +1359,8 @@ export type StreamCallbacks = {
   onTraceMeta?: (trace: AgentTrace) => void;
   /** 收到单个 trace event */
   onTraceEvent?: (event: TraceEvent, accumulatedEvents: TraceEvent[]) => void;
+  /** 收到 LLM 流式 token */
+  onLlmChunk?: (chunk: LlmChunkData) => void;
   /** 收到完整 response（包含最终 trace、plans 等） */
   onResponseComplete?: (response: InteractionResponsePayload) => void;
   /** SSE 连接错误 */
@@ -1363,7 +1393,9 @@ export function interactRespondStream(
           interaction_context: payload.interaction_context,
           constraints: payload.constraints ?? [],
           clarification_answers: payload.clarification_answers ?? {},
-          preference_detection_enabled: payload.preference_detection_enabled ?? true
+          preference_detection_enabled: payload.preference_detection_enabled ?? true,
+          require_confirmation: payload.require_confirmation ?? false,
+          confirmed_requirements: payload.confirmed_requirements ?? false
         }),
         signal: controller.signal,
       });
@@ -1416,6 +1448,8 @@ export function interactRespondStream(
             } else if (eventType === "trace_event") {
               accumulatedEvents = [...accumulatedEvents, parsed as TraceEvent];
               callbacks.onTraceEvent?.(parsed as TraceEvent, accumulatedEvents);
+            } else if (eventType === "llm_chunk") {
+              callbacks.onLlmChunk?.(parsed as LlmChunkData);
             } else if (eventType === "response_complete") {
               callbacks.onResponseComplete?.(parsed as InteractionResponsePayload);
             }

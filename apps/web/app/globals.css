@@ -81,6 +81,15 @@ textarea {
   50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
 }
 
+/* ── 收起按钮入场跳动提示 ── */
+@keyframes dz-bounce-in {
+  0%, 100% { transform: translateY(0); }
+  10% { transform: translateY(-4px); }
+  20% { transform: translateY(2px); }
+  30% { transform: translateY(-2px); }
+  40% { transform: translateY(0); }
+}
+
 /* ── prefers-reduced-motion：所有 blur 过渡改为即时切换 ── */
 @media (prefers-reduced-motion: reduce) {
   :root {

@@ -27,3 +27,8 @@ __pycache__/
 
 # Runtime data
 apps/api/.trace_data/
+.vercel
+
+# Vercel build-time copies
+api_backend/
+apps/web/api_backend/

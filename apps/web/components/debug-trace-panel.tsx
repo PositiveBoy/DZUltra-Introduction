@@ -26,7 +26,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { generateMockPois, generateMockUser, getTrace, listTraces } from "@/lib/api";
+import { createPortal } from "react-dom";
+import { demoRoutePlans, generateMockPois, generateMockUser, getTrace, listTraces } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useDemoStore } from "@/stores/use-demo-store";
 import type {
@@ -36,11 +37,14 @@ import type {
   GeneratedMockResponse,
   GenerateMockPoisRequest,
   GenerateMockUserRequest,
+  LlmRequestInfo,
+  LlmResponseInfo,
   MobileShellView,
   MockLocation,
   MockPoi,
   MockUserFull,
   TraceEvent,
+  TraceEventMetadata,
   TraceSummary
 } from "@/types/dzultra";
 import { SvgRouteMap } from "./svg-route-map";
@@ -135,16 +139,39 @@ export function DebugTracePanel() {
   const applyGeneratedUser = useDemoStore((state) => state.applyGeneratedUser);
   const setActiveUserId = useDemoStore((state) => state.setActiveUserId);
   const setGeneratedMockUsers = useDemoStore((state) => state.setGeneratedMockUsers);
+  const applyGeneratedPoi = useDemoStore((state) => state.applyGeneratedPoi);
+  const setGeneratedMockPois = useDemoStore((state) => state.setGeneratedMockPois);
+  const applyMockLocation = useDemoStore((state) => state.applyMockLocation);
+  const setGeneratedMockLocations = useDemoStore((state) => state.setGeneratedMockLocations);
+  const generatedMockLocations = useDemoStore((state) => state.generatedMockLocations);
   const debugView = useDemoStore((state) => state.activeDebugTab);
   const setDebugView = useDemoStore((state) => state.setActiveDebugTab);
   const traceDetailMode = useDemoStore((state) => state.activeDebugSubTab);
   const setTraceDetailMode = useDemoStore((state) => state.setActiveDebugSubTab);
   const activeAgentStep = useDemoStore((state) => state.activeAgentStep);
+  const selectedAgentStep = useDemoStore((state) => state.selectedAgentStep);
+  const setSelectedAgentStep = useDemoStore((state) => state.setSelectedAgentStep);
+  const setUserManuallySelectedAgent = useDemoStore((state) => state.setUserManuallySelectedAgent);
+  const setCurrentRoutePlans = useDemoStore((state) => state.setCurrentRoutePlans);
+  const startMockHistoryReplay = useDemoStore((state) => state.startMockHistoryReplay);
 
-  const hasActiveRun = !!activeTrace?.events.length || activeTrace?.status === "running";
+  const hasActiveRun = !!activeTrace && (activeTrace.status === "ready" || activeTrace.status === "running" || !!activeTrace.events.length);
   const visibleEvents = useMemo(() => (hasActiveRun ? activeTrace!.events : []), [activeTrace, hasActiveRun]);
   const agentGroups = useMemo(() => buildAgentGroups(visibleEvents, activeTrace?.agent_strategy), [visibleEvents, activeTrace?.agent_strategy]);
-  const selected = visibleEvents.find((event) => event.id === selectedTraceEventId) ?? visibleEvents[0];
+  const selected = (() => {
+    if (selectedTraceEventId) {
+      return visibleEvents.find((event) => event.id === selectedTraceEventId);
+    }
+    if (selectedAgentStep) {
+      // 从 selectedGroup 中找第一个 event
+      const group = agentGroups.find((g) => g.agentName === selectedAgentStep);
+      const firstEvent = group?.events[0];
+      if (firstEvent) return firstEvent;
+      // group 存在但 events 为空，返回 undefined 让 SummaryView 显示策略信息
+      return undefined;
+    }
+    return visibleEvents[0];
+  })();
   const plans = currentRoutePlans;
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
   const isChatRun = visibleEvents.some((event) => event.type === "chat_answered") && !visibleEvents.some((event) => event.type === "route_candidate_generated");
@@ -153,8 +180,10 @@ export function DebugTracePanel() {
   const candidateSnapshot = useMemo(() => buildCandidateSnapshot(visibleEvents, plans), [visibleEvents, plans]);
 
   // 计算当前选中 Agent 所属的 group，用于按 Agent 过滤子 Tab
-  const selectedGroup = agentGroups.find((group) => group.events.some((event) => event.id === selected?.id));
-  const currentAgentName = selectedGroup?.agentName;
+  const selectedGroup =
+    agentGroups.find((group) => group.events.some((event) => event.id === selected?.id)) ??
+    agentGroups.find((group) => group.agentName === selectedAgentStep);
+  const currentAgentName = selectedGroup?.agentName ?? selectedAgentStep ?? undefined;
 
   const agentCostSummary = useMemo(() => (selectedGroup ? summarizeTraceCost(selectedGroup.events) : null), [selectedGroup]);
   const isAgentLevel = !!currentAgentName;
@@ -251,21 +280,41 @@ export function DebugTracePanel() {
       const trace = await getTrace(traceId);
       setActiveTrace(trace);
       setSelectedTraceEventId(trace.events[0]?.id);
+      setSelectedAgentStep(trace.events[0]?.agent ?? trace.agent_strategy?.[0]?.name ?? null);
       setDebugView("trace");
+      startMockHistoryReplay(trace);
     } catch {
       setHistoryStatus("error");
     }
   }
 
   async function quickGenerateUser(userType: "new" | "regular") {
+    // 1. 生成位置
+    const location = randomChinaMockLocation();
+    applyMockLocation(location);
+    setGeneratedMockLocations([location, ...generatedMockLocations].slice(0, 5));
+
+    // 2. 生成用户
     await generateAndApplyMockUser({
       userType,
-      city: "北京",
-      scenario: userType === "new" ? "新用户首次使用点仔 Ultra" : "周六下午本地约会路线",
+      city: location.city,
+      area: location.area ?? "三里屯",
+      scenario: userType === "new" ? "新用户首次使用点仔 Ultra" : "一键生成点仔 Ultra 演示用户",
+      currentLocation: location,
       setGeneratedMockUsers,
       applyGeneratedUser,
       setActiveUserId,
     });
+
+    // 3. 生成 POI
+    const poiResult = await generateMockPois({
+      city: location.city,
+      area: location.area ?? "三里屯",
+      count: 30,
+    });
+    setGeneratedMockPois(poiResult.pois);
+    poiResult.pois.forEach((poi) => applyGeneratedPoi(poi));
+
     setDebugView("mock");
   }
 
@@ -301,13 +350,14 @@ export function DebugTracePanel() {
                 </div>
                 <div className="space-y-2 p-2">
                   {agentGroups.map((group, groupIndex) => {
-                    const selectedInGroup = group.events.some((event) => event.id === selected?.id);
+                    const selectedInGroup = group.events.some((event) => event.id === selected?.id) || group.agentName === selectedAgentStep;
                     const agentOrdinal = agentGroups.slice(0, groupIndex + 1).filter((item) => item.agentName).length;
                     const groupHasFallback = group.fallbackCount > 0;
                     const agentStatus = getAgentGroupStatus(group, activeAgentStep);
                     return (
                       <section
                         key={group.id}
+                        id={group.agentName ? `debug-agent-${group.agentName}` : undefined}
                         className={cn(
                           "rounded-md border bg-white p-2 transition",
                           selectedInGroup ? "border-dz-orange shadow-sm" :
@@ -322,7 +372,9 @@ export function DebugTracePanel() {
                         <button
                           type="button"
                           onClick={() => {
+                            setSelectedAgentStep(group.agentName ?? null);
                             setSelectedTraceEventId(group.events[0]?.id);
+                            setUserManuallySelectedAgent(true);
                             // 联动跳转：mobileView 只在 trace 完成后切换，subTab 随时切换
                             const targetView = getMobileViewForAgent(group.agentName);
                             if (targetView && activeTrace?.status === "completed") {
@@ -414,7 +466,11 @@ export function DebugTracePanel() {
                             return (
                               <button
                                 key={event.id}
-                                onClick={() => setSelectedTraceEventId(event.id)}
+                                onClick={() => {
+                                  setSelectedTraceEventId(event.id);
+                                  setSelectedAgentStep(event.agent ?? group.agentName ?? null);
+                                  setUserManuallySelectedAgent(true);
+                                }}
                                 className={cn(
                                   "w-full rounded-md px-2 py-1.5 text-left transition",
                                   selected?.id === event.id ? "bg-dz-soft text-dz-ink" : "hover:bg-[#fff7ed]"
@@ -444,6 +500,11 @@ export function DebugTracePanel() {
                               </button>
                             );
                           })}
+                          {!group.events.length ? (
+                            <div className="rounded-md border border-dashed border-neutral-200 bg-[#fffdf8] px-2 py-2 text-[11px] leading-4 text-neutral-400">
+                              等待真实 run 数据。用户输入后，这里会出现该 Agent 的事件、tool 调用和 fallback 记录。
+                            </div>
+                          ) : null}
                         </div>
                       </section>
                     );
@@ -483,11 +544,17 @@ export function DebugTracePanel() {
                     <h3 className="mt-0.5 truncate text-lg font-bold">{activeTrace?.user_goal ?? "低排队约会路线生成"}</h3>
                     <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-neutral-500">
                       <span className="rounded-full bg-[#fbfaf7] px-2 py-0.5">trace: {activeTrace?.id ?? "unknown"}</span>
-                      <span className="rounded-full bg-[#fbfaf7] px-2 py-0.5">runner: {activeTrace?.runner_mode ?? "deterministic_mock"}</span>
+                      <span className="rounded-full bg-[#fbfaf7] px-2 py-0.5">runner: {activeTrace?.runner_mode ?? "real_agent_ai_generated_data"}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 rounded-full bg-dz-soft px-2.5 py-1.5 text-xs font-semibold">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    {activeTrace?.status === "running" ? (
+                      <CircleDot className="h-3.5 w-3.5 animate-pulse text-blue-500" />
+                    ) : activeTrace?.status === "ready" ? (
+                      <CircleDot className="h-3.5 w-3.5 text-neutral-400" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    )}
                     {activeTrace?.status ?? "completed"}
                   </div>
                 </div>
@@ -520,6 +587,7 @@ export function DebugTracePanel() {
                     handoffEvents={handoffEvents}
                     agentStrategy={activeTrace?.agent_strategy}
                     agentGroup={selectedGroup}
+                    traceStatus={activeTrace?.status}
                   />
                 )}
 
@@ -552,6 +620,13 @@ export function DebugTracePanel() {
               status={historyStatus}
               activeTraceId={activeTrace?.id}
               onOpenTrace={openTrace}
+              onOpenMockTrace={(trace) => {
+                setActiveTrace(trace);
+                setSelectedTraceEventId(trace.events[0]?.id);
+                setSelectedAgentStep(trace.events[0]?.agent ?? trace.agent_strategy?.[0]?.name ?? null);
+                setDebugView("trace");
+                startMockHistoryReplay(trace);
+              }}
               onNewDemo={() => {
                 startNewTraceRun();
                 setDebugView("trace");
@@ -586,7 +661,8 @@ function SummaryView({
   toolEvents,
   handoffEvents,
   agentStrategy,
-  agentGroup
+  agentGroup,
+  traceStatus
 }: {
   selected?: TraceEvent;
   selectedCost: ReturnType<typeof eventCostDetail>;
@@ -597,9 +673,55 @@ function SummaryView({
   handoffEvents: TraceEvent[];
   agentStrategy?: AgentStrategy[];
   agentGroup?: AgentEventGroup;
+  traceStatus?: string;
 }) {
   if (!selected) {
-    return null;
+    if (agentGroup?.agentName) {
+      // 有 agentName 但无 events：显示策略信息而非 Skeleton
+      if (agentGroup.events.length === 0 && agentGroup.strategy) {
+        return (
+          <section className="rounded-md border border-dz-line bg-[#fffdf8] p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">Agent 等待执行</p>
+                <h4 className="mt-1 font-mono text-sm font-black">{agentGroup.agentName}</h4>
+                <p className="mt-2 text-xs leading-5 text-neutral-600">
+                  {agentGroup.strategy.responsibility ?? "等待真实 Agent 事件。"}
+                </p>
+              </div>
+              <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-neutral-400">0 events</span>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
+              <div className="rounded-md bg-white p-3">
+                <div className="font-bold text-neutral-500">输入</div>
+                <div className="mt-1 leading-5 text-neutral-700">{agentGroup.strategy.inputs.join("、") || "等待用户输入"}</div>
+              </div>
+              <div className="rounded-md bg-white p-3">
+                <div className="font-bold text-neutral-500">输出</div>
+                <div className="mt-1 leading-5 text-neutral-700">{agentGroup.strategy.outputs.join("、") || "等待 Agent 输出"}</div>
+              </div>
+              <div className="rounded-md bg-white p-3">
+                <div className="font-bold text-neutral-500">Fallback</div>
+                <div className="mt-1 leading-5 text-neutral-700">{agentGroup.strategy.failure_fallback || "真实运行后展示降级原因"}</div>
+              </div>
+            </div>
+          </section>
+        );
+      }
+      return <SkeletonAgentSummary group={agentGroup} />;
+    }
+    return (
+      <section className="rounded-md border border-dz-line bg-[#fffdf8] p-5">
+        <h4 className="text-sm font-black">
+          {traceStatus === "running" ? "正在等待后端 Agent 响应…" : "等待真实 run 数据"}
+        </h4>
+        <p className="mt-2 text-xs leading-5 text-neutral-500">
+          {traceStatus === "running"
+            ? "用户已提交请求，后端 Agent 正在处理。事件、tool 调用和 provider 记录会逐步出现在这里。"
+            : "新演示已经创建 Agent 框架；用户在左侧输入后，这里会替换为真实事件、tool 调用、provider 和 fallback 记录。"}
+        </p>
+      </section>
+    );
   }
 
   const agentName = agentGroup?.agentName;
@@ -617,13 +739,28 @@ function SummaryView({
               <p className="mt-1 text-xs leading-5 text-yellow-700">
                 {selected.metadata?.fallback_reason
                   ? String(selected.metadata.fallback_reason)
-                  : "本步骤使用了 provider 兜底逻辑，数据可靠性可能为 mocked。"}
+                  : "本步骤使用了 provider 兜底逻辑；只有 fallback 数据需要单独看原因。"}
               </p>
               {selected.metadata?.fallback_provider ? (
                 <p className="mt-1 text-xs font-mono text-yellow-700">
                   fallback_provider: {String(selected.metadata.fallback_provider)}
                 </p>
               ) : null}
+              {(selected.metadata?.http_status_code != null) && (
+                <p className="mt-1 text-xs font-mono text-yellow-700">
+                  HTTP {selected.metadata.http_status_code}
+                </p>
+              )}
+              {selected.metadata?.request_duration_ms != null && (
+                <p className="mt-1 text-xs font-mono text-yellow-700">
+                  耗时 {selected.metadata.request_duration_ms}ms
+                </p>
+              )}
+              {selected.metadata?.http_response_body && (
+                <p className="mt-1 text-xs font-mono text-yellow-700">
+                  响应体: {String(selected.metadata.http_response_body).length > 200 ? String(selected.metadata.http_response_body).slice(0, 200) + "…" : String(selected.metadata.http_response_body)}
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -672,6 +809,20 @@ function SummaryView({
         </section>
       )}
 
+      {/* LLM 请求/响应详情 */}
+      {selected.metadata?.llm_request && (
+        <LlmCallDetail
+          llmRequest={selected.metadata.llm_request}
+          llmResponse={selected.metadata.llm_response}
+          metadata={selected.metadata}
+        />
+      )}
+
+      {/* LLM Streaming 输出 */}
+      {selected.metadata?.streaming_tokens && (
+        <LlmStreamingPanel streamingTokens={String(selected.metadata.streaming_tokens)} />
+      )}
+
       {/* Observations */}
       {extractObservations(selected).length > 0 && (
         <section className="mt-5 rounded-md border border-dz-line bg-white p-5">
@@ -718,6 +869,37 @@ function SummaryView({
 
       {agentStrategy?.length ? <AgentStrategySection strategies={agentStrategy} selectedAgent={selected.agent} /> : null}
     </>
+  );
+}
+
+function SkeletonAgentSummary({ group }: { group: AgentEventGroup }) {
+  return (
+    <section className="rounded-md border border-dz-line bg-[#fffdf8] p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">Agent Skeleton</p>
+          <h4 className="mt-1 font-mono text-sm font-black">{group.agentName}</h4>
+          <p className="mt-2 text-xs leading-5 text-neutral-600">
+            {group.strategy?.responsibility ?? "等待真实 Agent 事件。"}
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-neutral-400">0 events</span>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
+        <div className="rounded-md bg-white p-3">
+          <div className="font-bold text-neutral-500">输入</div>
+          <div className="mt-1 leading-5 text-neutral-700">{group.strategy?.inputs.join("、") || "等待用户输入"}</div>
+        </div>
+        <div className="rounded-md bg-white p-3">
+          <div className="font-bold text-neutral-500">输出</div>
+          <div className="mt-1 leading-5 text-neutral-700">{group.strategy?.outputs.join("、") || "等待 Agent 输出"}</div>
+        </div>
+        <div className="rounded-md bg-white p-3">
+          <div className="font-bold text-neutral-500">Fallback</div>
+          <div className="mt-1 leading-5 text-neutral-700">{group.strategy?.failure_fallback || "真实运行后展示降级原因"}</div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -901,6 +1083,8 @@ function AgentSummaryView({
 
       {renderAgentSpecificContent(agentName, group)}
 
+      <AgentToolUseList group={group} />
+
       {/* Agent 级 LLM 信息 */}
       {selectedCost && (
         <div className="mt-4 grid grid-cols-4 gap-3 text-sm">
@@ -909,6 +1093,81 @@ function AgentSummaryView({
           <MiniStat label="模型耗时" value={`${selectedCost.modelDurationMs}ms`} />
           <MiniStat label="估算成本" value={formatCost(selectedCost.estimatedCostCny)} />
         </div>
+      )}
+    </section>
+  );
+}
+
+function AgentToolUseList({ group }: { group: AgentEventGroup }) {
+  const tools = group.events.filter((event) => event.tool_name);
+  return (
+    <section className="mt-4 rounded-md border border-dz-line bg-[#fffdf8] p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Wrench className="h-4 w-4 text-dz-orange" />
+          <h5 className="text-sm font-black">ToolUse 调用</h5>
+        </div>
+        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-neutral-500">{tools.length} tools</span>
+      </div>
+      {tools.length ? (
+        <div className="space-y-2">
+          {tools.map((event) => {
+            const providerCall = isRecord(event.tool_output?.provider_call) ? event.tool_output.provider_call : undefined;
+            const providerMetadata = isRecord(providerCall?.metadata) ? providerCall.metadata : undefined;
+            const provider = strOr(event.tool_output?.provider, strOr(providerCall?.provider, strOr(event.tool_output?.provider_name, undefined)));
+            const dataOrigin = strOr(event.tool_output?.data_origin, strOr(event.metadata?.data_origin, strOr(providerMetadata?.data_origin, undefined)));
+            const reliability = strOr(event.tool_output?.reliability, strOr(providerCall?.reliability, undefined));
+            const httpStatusCode = numberValue(event.tool_output?.http_status_code) ?? numberValue(event.metadata?.http_status_code) ?? numberValue(providerMetadata?.http_status_code);
+            const requestDurationMs = numberValue(event.tool_output?.request_duration_ms) ?? numberValue(event.metadata?.request_duration_ms) ?? numberValue(providerMetadata?.request_duration_ms);
+            const httpResponseBody = strOr(event.tool_output?.http_response_body, strOr(event.metadata?.http_response_body, strOr(providerMetadata?.http_response_body, undefined)));
+            return (
+              <details key={event.id} className="rounded-md border border-dz-line bg-white p-3">
+                <summary className="cursor-pointer list-none">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-mono text-xs font-black text-dz-orange">{event.tool_name}</div>
+                      <p className="mt-1 text-xs leading-5 text-neutral-600">{event.summary}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                      {provider ? <span className="rounded-full bg-[#fbfaf7] px-2 py-0.5 text-[10px] font-bold text-neutral-500">{provider}</span> : null}
+                      {dataOrigin ? <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">{dataOrigin}</span> : null}
+                      {reliability ? <span className="rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-bold text-green-700">{reliability}</span> : null}
+                      {event.fallback_used ? <span className="rounded-full bg-yellow-50 px-2 py-0.5 text-[10px] font-bold text-yellow-700">fallback</span> : null}
+                      {httpStatusCode != null ? <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold", httpStatusCode >= 400 ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700")}>HTTP {httpStatusCode}</span> : null}
+                      {requestDurationMs != null ? <span className="rounded-full bg-[#fbfaf7] px-2 py-0.5 text-[10px] font-bold text-neutral-500">{requestDurationMs}ms</span> : null}
+                    </div>
+                  </div>
+                </summary>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div>
+                    <h6 className="text-[11px] font-bold text-neutral-500">tool_input</h6>
+                    <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-[#171717] p-3 text-[11px] leading-5 text-[#d8f8d8]">
+                      {JSON.stringify(event.tool_input ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                  <div>
+                    <h6 className="text-[11px] font-bold text-neutral-500">tool_output</h6>
+                    <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-[#171717] p-3 text-[11px] leading-5 text-[#d8f8d8]">
+                      {JSON.stringify(event.tool_output ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+                {httpResponseBody && (
+                  <div className="mt-3">
+                    <h6 className="text-[11px] font-bold text-red-500">错误响应体</h6>
+                    <pre className="mt-1 max-h-32 overflow-auto rounded-md bg-red-50 p-3 text-[11px] leading-5 text-red-700">
+                      {String(httpResponseBody).length > 200 ? String(httpResponseBody).slice(0, 200) + "…" : String(httpResponseBody)}
+                    </pre>
+                  </div>
+                )}
+              </details>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-md bg-white px-3 py-2 text-xs leading-5 text-neutral-500">
+          本 Agent 未调用 tool，只处理结构化状态或接收上游结果。
+        </p>
       )}
     </section>
   );
@@ -1396,14 +1655,20 @@ function UnknownAgentSummary({ group }: { group: AgentEventGroup }) {
 async function generateAndApplyMockUser({
   userType,
   city,
+  area,
   scenario,
+  customization,
+  currentLocation,
   setGeneratedMockUsers,
   applyGeneratedUser,
   setActiveUserId,
 }: {
   userType: "new" | "regular";
   city: string;
+  area?: string;
   scenario: string;
+  customization?: string;
+  currentLocation?: MockLocation;
   setGeneratedMockUsers: (users: MockUserFull[]) => void;
   applyGeneratedUser: (user: MockUserFull) => void;
   setActiveUserId: (userId: string) => void;
@@ -1411,7 +1676,10 @@ async function generateAndApplyMockUser({
   const response = await generateMockUser({
     user_type: userType,
     city,
+    area,
     scenario,
+    customization,
+    current_location: currentLocation,
   });
   setGeneratedMockUsers(response.users);
   const activeUser = response.users[0];
@@ -1439,26 +1707,61 @@ function createManualMockLocation(draft: { city: string; area: string; address: 
 
 const CHINA_LOCATION_PRESETS: Array<Omit<MockLocation, "id" | "source" | "reliability">> = [
   { city: "北京", area: "三里屯", address: "太古里北区", latitude: 39.9348, longitude: 116.4542, label: "北京 · 三里屯" },
+  { city: "北京", area: "望京", address: "望京 SOHO 附近", latitude: 39.9959, longitude: 116.4811, label: "北京 · 望京" },
+  { city: "北京", area: "五道口", address: "五道口购物中心附近", latitude: 39.9927, longitude: 116.3372, label: "北京 · 五道口" },
   { city: "上海", area: "静安寺", address: "南京西路商圈", latitude: 31.2239, longitude: 121.4452, label: "上海 · 静安寺" },
+  { city: "上海", area: "徐家汇", address: "港汇恒隆广场附近", latitude: 31.1927, longitude: 121.4376, label: "上海 · 徐家汇" },
+  { city: "上海", area: "新天地", address: "太仓路附近", latitude: 31.2209, longitude: 121.4751, label: "上海 · 新天地" },
   { city: "成都", area: "太古里", address: "春熙路太古里", latitude: 30.657, longitude: 104.081, label: "成都 · 太古里" },
+  { city: "成都", area: "宽窄巷子", address: "宽窄巷子景区附近", latitude: 30.6695, longitude: 104.0554, label: "成都 · 宽窄巷子" },
+  { city: "成都", area: "玉林", address: "玉林生活广场附近", latitude: 30.6261, longitude: 104.0575, label: "成都 · 玉林" },
   { city: "杭州", area: "湖滨", address: "西湖湖滨商圈", latitude: 30.2589, longitude: 120.1649, label: "杭州 · 湖滨" },
+  { city: "杭州", area: "武林", address: "武林广场附近", latitude: 30.2741, longitude: 120.1642, label: "杭州 · 武林" },
+  { city: "杭州", area: "滨江", address: "星光大道商圈", latitude: 30.2086, longitude: 120.2121, label: "杭州 · 滨江" },
   { city: "广州", area: "天河", address: "天环广场附近", latitude: 23.1322, longitude: 113.327, label: "广州 · 天河" },
+  { city: "广州", area: "北京路", address: "北京路步行街", latitude: 23.1247, longitude: 113.2708, label: "广州 · 北京路" },
+  { city: "广州", area: "珠江新城", address: "花城汇附近", latitude: 23.1196, longitude: 113.3235, label: "广州 · 珠江新城" },
   { city: "深圳", area: "南山", address: "海岸城商圈", latitude: 22.5178, longitude: 113.936, label: "深圳 · 南山" },
+  { city: "深圳", area: "福田", address: "卓悦中心附近", latitude: 22.5431, longitude: 114.0579, label: "深圳 · 福田" },
+  { city: "深圳", area: "宝安", address: "壹方城附近", latitude: 22.5547, longitude: 113.8878, label: "深圳 · 宝安" },
   { city: "重庆", area: "解放碑", address: "解放碑步行街", latitude: 29.5637, longitude: 106.5755, label: "重庆 · 解放碑" },
+  { city: "重庆", area: "观音桥", address: "观音桥步行街", latitude: 29.5784, longitude: 106.5325, label: "重庆 · 观音桥" },
   { city: "西安", area: "小寨", address: "小寨商圈", latitude: 34.2236, longitude: 108.9531, label: "西安 · 小寨" },
+  { city: "西安", area: "曲江", address: "大唐不夜城附近", latitude: 34.2097, longitude: 108.9743, label: "西安 · 曲江" },
+  { city: "南京", area: "新街口", address: "德基广场附近", latitude: 32.0415, longitude: 118.7849, label: "南京 · 新街口" },
+  { city: "南京", area: "老门东", address: "老门东历史街区", latitude: 32.0139, longitude: 118.7948, label: "南京 · 老门东" },
+  { city: "武汉", area: "江汉路", address: "江汉路步行街", latitude: 30.5843, longitude: 114.2891, label: "武汉 · 江汉路" },
+  { city: "武汉", area: "光谷", address: "光谷步行街", latitude: 30.5066, longitude: 114.4005, label: "武汉 · 光谷" },
+  { city: "苏州", area: "观前街", address: "观前街商圈", latitude: 31.3143, longitude: 120.6229, label: "苏州 · 观前街" },
+  { city: "苏州", area: "金鸡湖", address: "苏州中心附近", latitude: 31.3174, longitude: 120.6793, label: "苏州 · 金鸡湖" },
+  { city: "长沙", area: "五一广场", address: "黄兴路步行街附近", latitude: 28.1934, longitude: 112.9767, label: "长沙 · 五一广场" },
+  { city: "青岛", area: "五四广场", address: "万象城附近", latitude: 36.0647, longitude: 120.3826, label: "青岛 · 五四广场" },
 ];
 
 function randomChinaMockLocation(): MockLocation {
   const preset = CHINA_LOCATION_PRESETS[Math.floor(Math.random() * CHINA_LOCATION_PRESETS.length)];
+  const latitude = addCoordinateJitter(preset.latitude);
+  const longitude = addCoordinateJitter(preset.longitude);
+  const suffix = Math.random().toString(36).slice(2, 8);
   return {
     ...preset,
-    id: `random-location-${Date.now()}`,
+    id: `random-location-${Date.now()}-${suffix}`,
+    latitude,
+    longitude,
     source: "random",
     reliability: "mocked",
   };
 }
 
-// 首屏空态：还没有任何 run 时，引导用户先生成模拟用户
+function addCoordinateJitter(value?: number): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const jitter = (Math.random() - 0.5) * 0.012;
+  return Number((value + jitter).toFixed(6));
+}
+
+// 首屏空态：还没有任何 run 时，引导用户创建空演示框架或生成模拟用户
 function TraceEmptyState({
   onNewRun,
   onOpenHistory,
@@ -1470,18 +1773,19 @@ function TraceEmptyState({
   onOpenMock: () => void;
   onQuickGenerateUser: (userType: "new" | "regular") => Promise<void>;
 }) {
-  const [loadingType, setLoadingType] = useState<"new" | "regular" | null>(null);
+  const [userType, setUserType] = useState<"new" | "regular">("regular");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleQuickGenerate(userType: "new" | "regular") {
-    setLoadingType(userType);
+  async function handleOneClick() {
+    setLoading(true);
     setError(null);
     try {
       await onQuickGenerateUser(userType);
     } catch (quickError) {
       setError(quickError instanceof Error ? quickError.message : "生成失败");
     } finally {
-      setLoadingType(null);
+      setLoading(false);
     }
   }
 
@@ -1492,45 +1796,49 @@ function TraceEmptyState({
           <Sparkles className="h-8 w-8 text-dz-orange" />
         </div>
         <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">Debug Trace</p>
-        <h3 className="mt-1 text-lg font-black text-dz-ink">开始前先生成模拟用户</h3>
+        <h3 className="mt-1 text-lg font-black text-dz-ink">一键搭建演示数据</h3>
         <p className="mt-2 text-sm leading-6 text-neutral-500">
-          路线规划需要模拟用户画像来驱动 Agent 决策。
-          <br />
-          选择用户类型快速生成，或在 AI Mock 生成器中自定义。
+          选择用户类型，一键生成用户、POI 和位置数据。
         </p>
 
-        <div className="mt-5 flex items-center justify-center gap-2">
+        <div className="mt-5 flex items-center justify-center gap-3">
+          <div className="inline-flex items-center rounded-full border border-dz-line bg-white p-0.5">
+            <button
+              type="button"
+              onClick={() => setUserType("new")}
+              className={cn(
+                "rounded-full px-3 py-1.5 text-xs font-bold transition",
+                userType === "new"
+                  ? "bg-dz-orange text-white shadow-sm"
+                  : "text-neutral-500 hover:text-dz-ink"
+              )}
+            >
+              新用户
+            </button>
+            <button
+              type="button"
+              onClick={() => setUserType("regular")}
+              className={cn(
+                "rounded-full px-3 py-1.5 text-xs font-bold transition",
+                userType === "regular"
+                  ? "bg-dz-orange text-white shadow-sm"
+                  : "text-neutral-500 hover:text-dz-ink"
+              )}
+            >
+              常规用户
+            </button>
+          </div>
           <button
             type="button"
-            onClick={() => void handleQuickGenerate("new")}
-            disabled={loadingType !== null}
-            className="inline-flex items-center gap-1.5 rounded-full border border-dz-line bg-white px-4 py-2 text-xs font-bold text-neutral-600 transition hover:border-dz-orange hover:text-dz-orange disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-300"
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            {loadingType === "new" ? "生成中..." : "新用户"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleQuickGenerate("regular")}
-            disabled={loadingType !== null}
-            className="inline-flex items-center gap-1.5 rounded-full bg-dz-orange px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32] disabled:cursor-not-allowed disabled:bg-neutral-300"
+            onClick={() => void handleOneClick()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-full bg-dz-orange px-5 py-2 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32] disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            {loadingType === "regular" ? "生成中..." : "常规用户"}
+            {loading ? "生成中..." : "一键生成"}
           </button>
         </div>
         {error ? <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{error}</p> : null}
-
-        <ul className="mt-5 space-y-2 text-left">
-          <li className="flex items-start gap-2 rounded-md border border-dz-line bg-white px-3 py-2 text-xs leading-5">
-            <span className="mt-0.5 shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-bold text-neutral-500">新用户</span>
-            <span>空白画像，无偏好和历史行为，适合测试冷启动场景。</span>
-          </li>
-          <li className="flex items-start gap-2 rounded-md border border-dz-line bg-white px-3 py-2 text-xs leading-5">
-            <span className="mt-0.5 shrink-0 rounded-full bg-dz-soft px-1.5 py-0.5 text-[10px] font-bold text-dz-orange">常规用户</span>
-            <span>AI 自动生成偏好、避坑等属性，属性会影响后续路线规划逻辑。</span>
-          </li>
-        </ul>
 
         <div className="mt-5 flex items-center justify-center gap-2">
           <button
@@ -1559,7 +1867,7 @@ function TraceEmptyState({
           </button>
         </div>
         <p className="mt-5 text-[11px] leading-5 text-neutral-400">
-          生成用户后，前往左侧用户端演示开始路线规划，Debug Trace 会实时追踪全链路。
+          Mock 数据只在生成器、History 快捷演示、当前 run 或 fallback 中展示，不会首屏预置业务数据。
         </p>
       </div>
     </div>
@@ -1908,20 +2216,27 @@ function MockDataView({
   isChatRun: boolean;
 }) {
   // AI Mock 生成器内部状态
-  const [userForm, setUserForm] = useState<GenerateMockUserRequest>({ user_type: "regular", city: "北京", scenario: "周六下午本地约会路线" });
+  const [userForm, setUserForm] = useState<GenerateMockUserRequest>({ user_type: "regular", city: "北京", area: "三里屯", scenario: "一键生成点仔 Ultra 演示用户" });
   const [poiForm, setPoiForm] = useState<GenerateMockPoisRequest>({
     city: "北京",
     area: "三里屯",
-    theme: "低排队约会路线",
-    count: 6
+    count: 30
   });
   const [locationDraft, setLocationDraft] = useState({ city: "北京", area: "三里屯", address: "" });
+  const [mockCustomization, setMockCustomization] = useState("不喜欢排队，想要路线顺一点");
+  const mockBoardTab = useDemoStore((s) => s.mockBoardTab);
+  const setMockBoardTab = useDemoStore((s) => s.setMockBoardTab);
+  const mockBoardExpanded = useDemoStore((s) => s.mockBoardExpanded);
+  const setMockBoardExpanded = useDemoStore((s) => s.setMockBoardExpanded);
   const [userResponse, setUserResponse] = useState<GeneratedMockResponse | null>(null);
   const [poiResponse, setPoiResponse] = useState<GeneratedMockResponse | null>(null);
   const [userError, setUserError] = useState<string | null>(null);
   const [poiError, setPoiError] = useState<string | null>(null);
+  const mockBoardRef = useRef<HTMLDivElement>(null);
   const [userLoading, setUserLoading] = useState(false);
   const [poiLoading, setPoiLoading] = useState(false);
+  const [oneClickLoading, setOneClickLoading] = useState(false);
+  const [oneClickError, setOneClickError] = useState<string | null>(null);
 
   const generatedMockUsers = useDemoStore((state) => state.generatedMockUsers);
   const generatedMockPois = useDemoStore((state) => state.generatedMockPois);
@@ -1929,6 +2244,7 @@ function MockDataView({
   const appliedMockUsers = useDemoStore((state) => state.appliedMockUsers);
   const appliedMockPois = useDemoStore((state) => state.appliedMockPois);
   const activeMockLocation = useDemoStore((state) => state.activeMockLocation);
+  const activeUserId = useDemoStore((state) => state.activeUserId);
   const setGeneratedMockUsers = useDemoStore((state) => state.setGeneratedMockUsers);
   const setGeneratedMockPois = useDemoStore((state) => state.setGeneratedMockPois);
   const setGeneratedMockLocations = useDemoStore((state) => state.setGeneratedMockLocations);
@@ -1938,6 +2254,8 @@ function MockDataView({
   const clearAppliedMock = useDemoStore((state) => state.clearAppliedMock);
   const setActiveUserId = useDemoStore((state) => state.setActiveUserId);
 
+  const activeMockUser = appliedMockUsers.find((user) => user.id === activeUserId) ?? appliedMockUsers[0] ?? generatedMockUsers[0];
+
   async function handleGenerateUser() {
     setUserLoading(true);
     setUserError(null);
@@ -1945,12 +2263,16 @@ function MockDataView({
       const response = await generateAndApplyMockUser({
         userType: userForm.user_type ?? "regular",
         city: userForm.city ?? "北京",
-        scenario: userForm.scenario ?? "周六下午本地约会路线",
+        area: userForm.area ?? locationDraft.area,
+        scenario: userForm.scenario ?? "一键生成点仔 Ultra 演示用户",
+        customization: mockCustomization,
+        currentLocation: activeMockLocation,
         setGeneratedMockUsers,
         applyGeneratedUser,
         setActiveUserId,
       });
       setUserResponse(response);
+      mockBoardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
       setUserError(error instanceof Error ? error.message : "生成失败");
     } finally {
@@ -1962,9 +2284,17 @@ function MockDataView({
     setPoiLoading(true);
     setPoiError(null);
     try {
-      const response = await generateMockPois(poiForm);
+      const response = await generateMockPois({
+        ...poiForm,
+        city: poiForm.city || activeMockLocation?.city || "北京",
+        area: poiForm.area || activeMockLocation?.area || "三里屯",
+        customization: poiForm.customization || mockCustomization,
+        count: poiForm.count ?? 30,
+      });
       setPoiResponse(response);
       setGeneratedMockPois(response.pois);
+      response.pois.forEach((poi) => applyGeneratedPoi(poi));
+      mockBoardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
       setPoiError(error instanceof Error ? error.message : "生成失败");
     } finally {
@@ -1983,6 +2313,56 @@ function MockDataView({
     setLocationDraft({ city: location.city, area: location.area ?? "", address: location.address ?? "" });
     setGeneratedMockLocations([location, ...generatedMockLocations].slice(0, 5));
     applyMockLocation(location);
+  }
+
+  async function handleOneClickGenerate() {
+    setOneClickLoading(true);
+    setOneClickError(null);
+    try {
+      const location = locationDraft.city.trim()
+        ? createManualMockLocation(locationDraft)
+        : randomChinaMockLocation();
+      applyMockLocation(location);
+      setGeneratedMockLocations([location, ...generatedMockLocations].slice(0, 5));
+
+      const nextUserForm = {
+        ...userForm,
+        city: location.city,
+        area: location.area,
+        scenario: "一键生成点仔 Ultra 演示用户",
+        customization: mockCustomization,
+      };
+      const userResult = await generateAndApplyMockUser({
+        userType: nextUserForm.user_type ?? "regular",
+        city: location.city,
+        area: location.area,
+        scenario: nextUserForm.scenario,
+        customization: mockCustomization,
+        currentLocation: location,
+        setGeneratedMockUsers,
+        applyGeneratedUser,
+        setActiveUserId,
+      });
+      setUserForm(nextUserForm);
+      setUserResponse(userResult);
+
+      const poiResult = await generateMockPois({
+        city: location.city,
+        area: location.area ?? "三里屯",
+        customization: mockCustomization,
+        count: 30,
+      });
+      setPoiForm({ city: location.city, area: location.area ?? "三里屯", customization: mockCustomization, count: 30 });
+      setPoiResponse(poiResult);
+      setGeneratedMockPois(poiResult.pois);
+      poiResult.pois.forEach((poi) => applyGeneratedPoi(poi));
+      setMockBoardTab("user");
+      mockBoardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      setOneClickError(error instanceof Error ? error.message : "一键生成失败");
+    } finally {
+      setOneClickLoading(false);
+    }
   }
 
   const mergedUsers: MockUserFull[] = useMemo(() => {
@@ -2063,13 +2443,28 @@ function MockDataView({
       <section className="rounded-md border border-dz-orange/40 bg-dz-soft/40 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">MockDataAgent · AI Mock 生成器</p>
-            <h3 className="mt-1 text-base font-black text-dz-ink">演示者 / 评审输入要求 → LLM 生成 → Pydantic 校验 → 地图 provider 补齐坐标</h3>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">MockDataAgent · AI 生成真实结构数据源</p>
+            <h3 className="mt-1 text-base font-black text-dz-ink">输入要求 → LLM 生成真实接口结构 → Pydantic 校验 → Agent 正式读取</h3>
             <p className="mt-2 text-xs leading-5 text-neutral-600">
-              该面板不参与用户主规划链路，结果仅供评审演示；点 “应用为活跃用户” 或 “加入候选池” 后可在 store 中被主链路选用。
+              这里生成的是演示环境的正式数据源，字段结构按真实 API 设计；只有 LLM/API/schema 失败后的模板才算 fallback。
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1 text-[10px] text-neutral-500">
+          <div className="flex flex-col items-end gap-2 text-[10px] text-neutral-500">
+            <button
+              type="button"
+              onClick={() => {
+                setMockBoardTab("user");
+                setMockBoardExpanded(true);
+              }}
+              className="max-w-[260px] rounded-full border border-dz-orange/30 bg-white px-3 py-1.5 text-left shadow-sm transition hover:border-dz-orange"
+            >
+              <span className="block truncate font-mono text-[10px] font-black text-dz-orange">
+                {activeMockUser?.id ?? "mock-user-empty"}
+              </span>
+              <span className="block truncate text-[10px] font-bold text-neutral-600">
+                {activeMockLocation?.label ?? activeMockUser?.city ?? "未设置 GPS 定位"}
+              </span>
+            </button>
             <span className="rounded-full bg-white px-2 py-0.5 font-bold text-dz-orange">
               {appliedMockUsers.length} 用户 / {appliedMockPois.length} POI / {activeMockLocation ? 1 : 0} 位置已应用
             </span>
@@ -2087,13 +2482,68 @@ function MockDataView({
         </div>
       </section>
 
+      <section className="mt-4 rounded-md border border-dz-line bg-white p-5">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-dz-orange">One Click Mock</p>
+            <h4 className="mt-1 text-sm font-black">一键生成演示数据</h4>
+          </div>
+          <div className="ml-auto grid min-w-[520px] flex-1 grid-cols-[140px_1fr_1fr] gap-2">
+            <select
+              value={userForm.user_type ?? "regular"}
+              onChange={(event) => setUserForm((prev) => ({ ...prev, user_type: event.target.value as "new" | "regular" }))}
+              className="rounded-md border border-dz-line bg-[#fffdf8] px-2 py-2 text-xs font-bold focus:border-dz-orange focus:outline-none"
+            >
+              <option value="regular">老用户</option>
+              <option value="new">新用户</option>
+            </select>
+            <input
+              type="text"
+              value={locationDraft.city}
+              onChange={(event) => setLocationDraft((prev) => ({ ...prev, city: event.target.value }))}
+              className="rounded-md border border-dz-line bg-[#fffdf8] px-2 py-2 text-xs focus:border-dz-orange focus:outline-none"
+              placeholder="城市，如北京"
+            />
+            <input
+              type="text"
+              value={locationDraft.area}
+              onChange={(event) => setLocationDraft((prev) => ({ ...prev, area: event.target.value }))}
+              className="rounded-md border border-dz-line bg-[#fffdf8] px-2 py-2 text-xs focus:border-dz-orange focus:outline-none"
+              placeholder="区域，如三里屯"
+            />
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-[1fr_170px] gap-2">
+          <input
+            type="text"
+            value={mockCustomization}
+            onChange={(event) => setMockCustomization(event.target.value)}
+            className="rounded-md border border-dz-line bg-[#fffdf8] px-3 py-2 text-xs focus:border-dz-orange focus:outline-none"
+            placeholder="自然语言定制，比如：不喜欢排队、预算人均 150、喜欢安静聊天"
+          />
+          <button
+            type="button"
+            onClick={() => void handleOneClickGenerate()}
+            disabled={oneClickLoading}
+            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-dz-orange px-3 py-2 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32] disabled:cursor-not-allowed disabled:bg-neutral-300"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {oneClickLoading ? "生成中..." : "一键生成"}
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] leading-5 text-neutral-500">
+          默认生成 1 个 AI 用户、1 个 GPS 位置和 30 个真实结构 POI。POI 数量先限制为 30，避免前端看板和本地状态占用过多内存。
+        </p>
+        {oneClickError ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{oneClickError}</p> : null}
+      </section>
+
       {/* 表单区：User + POI + Location */}
       <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
-        {/* Mock User 生成器 */}
+        {/* AI 用户数据生成器 */}
         <div className="rounded-md border border-dz-line bg-white p-5">
           <div className="flex items-center gap-2">
             <UserPlus className="h-4 w-4 text-dz-orange" />
-            <h4 className="text-sm font-black">生成 Mock User</h4>
+            <h4 className="text-sm font-black">生成 AI 用户数据</h4>
             <span className="ml-auto rounded-full bg-dz-soft px-2 py-0.5 text-[10px] font-bold text-dz-orange">/mock/generate-user</span>
           </div>
           <div className="mt-3 space-y-2 text-xs">
@@ -2125,13 +2575,13 @@ function MockDataView({
               />
             </label>
             <label className="block">
-              <span className="font-bold text-neutral-500">场景</span>
+              <span className="font-bold text-neutral-500">自然语言定制</span>
               <textarea
-                value={userForm.scenario ?? ""}
-                onChange={(event) => setUserForm((prev) => ({ ...prev, scenario: event.target.value }))}
+                value={mockCustomization}
+                onChange={(event) => setMockCustomization(event.target.value)}
                 rows={3}
                 className="mt-1 w-full resize-none rounded-md border border-dz-line bg-[#fffdf8] px-2 py-1.5 text-xs leading-5 focus:border-dz-orange focus:outline-none"
-                placeholder="周六下午本地约会路线"
+                placeholder="比如：不喜欢排队、预算人均 150、喜欢安静聊天"
               />
             </label>
             <button
@@ -2141,10 +2591,10 @@ function MockDataView({
               className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-dz-orange px-3 py-2 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32] disabled:cursor-not-allowed disabled:bg-neutral-300"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              {userLoading ? "生成中..." : "调 MockDataAgent 生成"}
+              {userLoading ? "生成中..." : "生成真实结构用户"}
             </button>
             <p className="text-[11px] leading-5 text-neutral-400">
-              生成后会自动应用为活跃用户；新用户为空白画像，常规用户会带偏好和避雷点。
+              生成后会自动应用为活跃用户；新用户没有历史行为，老用户会带偏好、历史收藏、评分和 UGC。
             </p>
             {userError ? <p className="rounded-md bg-red-50 px-2 py-1 text-[11px] text-red-600">{userError}</p> : null}
           </div>
@@ -2191,11 +2641,11 @@ function MockDataView({
           ) : null}
         </div>
 
-        {/* Mock POI 生成器 */}
+        {/* AI POI 数据生成器 */}
         <div className="rounded-md border border-dz-line bg-white p-5">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-dz-orange" />
-            <h4 className="text-sm font-black">生成 Mock POI</h4>
+            <h4 className="text-sm font-black">生成 AI POI 数据</h4>
             <span className="ml-auto rounded-full bg-dz-soft px-2 py-0.5 text-[10px] font-bold text-dz-orange">/mock/generate-pois</span>
           </div>
           <div className="mt-3 space-y-2 text-xs">
@@ -2220,20 +2670,20 @@ function MockDataView({
               </label>
             </div>
             <label className="block">
-              <span className="font-bold text-neutral-500">主题</span>
+              <span className="font-bold text-neutral-500">自然语言定制（可选）</span>
               <input
                 type="text"
-                value={poiForm.theme ?? ""}
-                onChange={(event) => setPoiForm((prev) => ({ ...prev, theme: event.target.value }))}
+                value={poiForm.customization ?? mockCustomization}
+                onChange={(event) => setPoiForm((prev) => ({ ...prev, customization: event.target.value }))}
                 className="mt-1 w-full rounded-md border border-dz-line bg-[#fffdf8] px-2 py-1.5 text-xs focus:border-dz-orange focus:outline-none"
               />
             </label>
             <label className="block">
-              <span className="font-bold text-neutral-500">数量（3-20）</span>
+              <span className="font-bold text-neutral-500">数量（3-100）</span>
               <input
                 type="number"
                 min={3}
-                max={20}
+                max={100}
                 value={poiForm.count ?? 6}
                 onChange={(event) => setPoiForm((prev) => ({ ...prev, count: Number(event.target.value) }))}
                 className="mt-1 w-full rounded-md border border-dz-line bg-[#fffdf8] px-2 py-1.5 text-xs focus:border-dz-orange focus:outline-none"
@@ -2390,11 +2840,11 @@ function MockDataView({
       <section className="mt-4 rounded-md border border-dz-line bg-[#171717] p-4 text-xs leading-5 text-white">
         <div className="font-black">MockDataAgent 链路</div>
         <p className="mt-1 text-white/70">
-          演示者输入生成要求 → LLM Mock Data Provider (LongCat) → Pydantic 校验 → 地图 provider (高德/Mock) 校验或补齐坐标 → 前端预览。
+          演示者输入生成要求 → LongCat 生成 ai_generated_dataset → Pydantic 校验 → 数据进入正式演示 API → Agent 真实判断。
           长 / 复杂生成会进入长 LLM 任务；
           {hasActiveRun
             ? `当前 provider = ${mapSnapshot.provider} · 坐标置信度 = ${mapSnapshot.coordinateConfidence}。`
-            : "等待首次 Run 后再展示当前链路用到的 Mock 字段。"}
+            : "等待首次 Run 后再展示当前链路用到的数据源字段。"}
         </p>
         {generatedMockUsers.length || generatedMockPois.length || generatedMockLocations.length ? (
           <p className="mt-2 text-white/55">
@@ -2403,6 +2853,20 @@ function MockDataView({
         ) : null}
       </section>
 
+      <div ref={mockBoardRef}>
+        <MockDataBoard
+          users={mergedUsers.length ? mergedUsers : generatedMockUsers}
+          pois={mergedPois.length ? mergedPois : generatedMockPois}
+          location={activeMockLocation}
+          userResponse={userResponse}
+          poiResponse={poiResponse}
+          activeTab={mockBoardTab}
+          expanded={mockBoardExpanded}
+          onTabChange={setMockBoardTab}
+          onExpandedChange={setMockBoardExpanded}
+        />
+      </div>
+
       {shouldShowRunMockData ? (
         <>
           {/* 当前 run 用到的 Mock 字段 */}
@@ -2410,9 +2874,9 @@ function MockDataView({
             <section className="mt-5 rounded-md border-2 border-yellow-400 bg-yellow-50/50 p-5">
               <div className="mb-3 flex items-center justify-between">
                 <div>
-                  <h4 className="text-sm font-black text-yellow-800">当前 run 用到的 Mock / Fallback 字段</h4>
+                  <h4 className="text-sm font-black text-yellow-800">当前 run 用到的 AI 生成数据 / Fallback 字段</h4>
                   <p className="mt-1 text-xs leading-5 text-yellow-700">
-                    以下字段在当前 run 中标记为 mocked 或使用了 fallback，数据可靠性可能不是 verified。
+                    AI 生成且校验通过的数据是正式输入；只有 fallback 字段需要关注降级原因。
                   </p>
                 </div>
                 <span className="rounded-full bg-yellow-100 px-2 py-1 text-[11px] font-bold text-yellow-700">{mockFieldsFromTrace.length} 项</span>
@@ -2434,7 +2898,7 @@ function MockDataView({
           <section className="mt-5 grid grid-cols-2 gap-4">
             <div className="rounded-md border border-dz-line bg-white p-5">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-black">当前 run / 已应用 Mock User</h4>
+                <h4 className="text-sm font-black">当前 run / 已应用 AI 用户</h4>
                 <span className="rounded-full bg-dz-soft px-2 py-0.5 text-[10px] font-bold text-dz-orange">{mergedUsers.length} users</span>
               </div>
               <div className="mt-3 space-y-2">
@@ -2457,7 +2921,7 @@ function MockDataView({
                   ))
                 ) : (
                   <p className="rounded-md bg-[#fffdf8] px-3 py-2 text-xs leading-5 text-neutral-500">
-                    当前 run 没有展示完整 Mock User；只展示 Trace 中实际命中的偏好和 fallback 字段。
+                    当前 run 没有展示完整 AI 用户数据；只展示 Trace 中实际命中的偏好和 fallback 字段。
                   </p>
                 )}
               </div>
@@ -2501,9 +2965,9 @@ function MockDataView({
           <section className="mt-5 rounded-md border border-dz-line bg-white p-5">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h4 className="text-sm font-black">当前 run 用到的 Mock POI / UGC</h4>
+                <h4 className="text-sm font-black">当前 run 用到的 AI 生成 POI / UGC</h4>
                 <p className="mt-1 text-xs leading-5 text-neutral-500">
-                  这里只展示本轮方案、fallback 或生成器应用过的数据，不展示全量基础 Mock 池。
+                  这里只展示本轮方案、fallback 或生成器应用过的数据，不展示全量基础数据池。
                 </p>
               </div>
               <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">
@@ -2528,7 +2992,7 @@ function MockDataView({
                   ))
                 ) : (
                   <p className="rounded-md border border-dz-line bg-[#fffdf8] px-3 py-2 text-xs leading-5 text-neutral-500">
-                    没有手动应用的 Mock POI；如果当前 run 使用了本地 fallback，可在右侧 UGC/方案摘要中查看用到的站点。
+                    没有手动应用的 AI 生成 POI；如果当前 run 使用了 fallback，可在右侧 UGC/方案摘要中查看用到的站点。
                   </p>
                 )}
               </div>
@@ -2554,7 +3018,7 @@ function MockDataView({
         <section className="mt-5 rounded-md border border-dz-line bg-white p-5">
           <h4 className="text-sm font-black">等待首次 Run</h4>
           <p className="mt-2 text-xs leading-5 text-neutral-500">
-            首屏不展示基础 Mock 用户池或 POI 池。开始一次规划、触发 fallback，或在上方生成并应用 Mock 数据后，这里才会显示当前 run 用到的 Mock 内容。
+            首屏不展示基础用户池或 POI 池。开始一次规划、触发 fallback，或在上方生成并应用 AI 生成数据后，这里才会显示当前 run 用到的数据内容。
           </p>
         </section>
       )}
@@ -2579,7 +3043,7 @@ function ResponseMetaCard({ response, kind }: { response: GeneratedMockResponse;
             response.fallback_used ? "bg-yellow-50 text-yellow-700" : "bg-green-50 text-green-700"
           )}
         >
-          {response.fallback_used ? "fallback_used" : "real_provider"}
+          {response.fallback_used ? "fallback_used" : "ai_generated_dataset"}
         </span>
         <span className="rounded-full bg-dz-soft px-2 py-0.5 text-[10px] font-bold text-dz-orange">{response.source}</span>
         <span className="text-neutral-500">{totalCount} 项</span>
@@ -2600,6 +3064,236 @@ function ResponseMetaCard({ response, kind }: { response: GeneratedMockResponse;
         <p className="mt-1 text-[10px] text-neutral-500">geocode_reports: {geocodeReports.length} 项地图校验报告</p>
       ) : null}
       {note ? <p className="mt-1 text-[10px] text-neutral-500">{note}</p> : null}
+    </div>
+  );
+}
+
+function MockDataBoard({
+  users,
+  pois,
+  location,
+  userResponse,
+  poiResponse,
+  activeTab,
+  expanded,
+  onTabChange,
+  onExpandedChange
+}: {
+  users: MockUserFull[];
+  pois: MockPoi[];
+  location?: MockLocation;
+  userResponse: GeneratedMockResponse | null;
+  poiResponse: GeneratedMockResponse | null;
+  activeTab: "user" | "location" | "pois" | "history" | "json";
+  expanded: boolean;
+  onTabChange: (tab: "user" | "location" | "pois" | "history" | "json") => void;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  const board = (
+    <section className={cn("rounded-md border border-dz-line bg-white p-5", expanded && "fixed inset-5 z-[100] overflow-hidden shadow-2xl")}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-black">AI 生成数据看板</h4>
+          <p className="mt-1 text-xs leading-5 text-neutral-500">
+            查看当前生成或已应用的真实结构用户、定位、POI、历史行为和原始 JSON。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onExpandedChange(!expanded)}
+            className="rounded-full border border-dz-line bg-white px-3 py-1.5 text-xs font-bold text-neutral-600 hover:border-dz-orange hover:text-dz-orange"
+          >
+            {expanded ? "收起" : "展开"}
+          </button>
+          {expanded ? (
+            <button
+              type="button"
+              onClick={() => onExpandedChange(false)}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-dz-line bg-white text-neutral-500 hover:border-dz-orange hover:text-dz-orange"
+              aria-label="关闭 AI 生成数据看板"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-1 rounded-md bg-[#fbfaf7] p-1">
+        {([
+          ["user", "用户"],
+          ["location", "当前位置"],
+          ["pois", `POI ${pois.length}`],
+          ["history", "历史/UGC"],
+          ["json", "JSON"],
+        ] as const).map(([tab, label]) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => onTabChange(tab)}
+            className={cn(
+              "rounded-md px-2.5 py-1.5 text-[11px] font-bold transition",
+              activeTab === tab ? "bg-white text-dz-orange shadow-sm" : "text-neutral-500 hover:text-dz-ink"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className={cn("mt-4 overflow-y-auto [scrollbar-width:thin]", expanded ? "h-[calc(100vh-190px)]" : "max-h-[520px]")}>
+        {activeTab === "user" && <MockBoardUsers users={users} />}
+        {activeTab === "location" && <MockBoardLocation location={location} />}
+        {activeTab === "pois" && <MockBoardPois pois={pois} />}
+        {activeTab === "history" && <MockBoardHistory users={users} />}
+        {activeTab === "json" && (
+          <pre className="rounded-md bg-[#171717] p-4 text-[11px] leading-5 text-[#d8f8d8]">
+            {JSON.stringify({ users, location, pois, userResponse, poiResponse }, null, 2)}
+          </pre>
+        )}
+      </div>
+    </section>
+  );
+
+  if (expanded && typeof document !== "undefined") {
+    return createPortal(
+      <div className="fixed inset-0 z-[99] bg-black/20 p-0 backdrop-blur-sm">{board}</div>,
+      document.body
+    );
+  }
+  return <div className="mt-5">{board}</div>;
+}
+
+function MockBoardUsers({ users }: { users: MockUserFull[] }) {
+  if (!users.length) {
+    return <p className="rounded-md bg-[#fffdf8] p-4 text-sm text-neutral-500">尚未生成 AI 用户数据。</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {users.map((user) => (
+        <article key={user.id} className="rounded-md border border-dz-line bg-[#fffdf8] p-4 text-xs leading-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-mono text-[10px] font-black text-dz-orange">{user.id}</div>
+              <h5 className="mt-1 text-sm font-black">{user.name}</h5>
+              <p className="mt-1 text-neutral-600">{user.scenario}</p>
+            </div>
+            <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-neutral-500">
+              {user.user_type === "new" ? "新用户" : "老用户"}
+            </span>
+          </div>
+          <div className="mt-3 grid grid-cols-4 gap-2">
+            <MiniField label="性别" value={user.gender ?? "未设置"} />
+            <MiniField label="年龄" value={typeof user.age === "number" ? `${user.age}` : "未设置"} />
+            <MiniField label="职业" value={user.occupation ?? "未设置"} />
+            <MiniField label="预算" value={user.budget_per_person ? `¥${user.budget_per_person}/人` : "未设置"} />
+          </div>
+          <ChipRows title="偏好" items={user.preferences} />
+          <ChipRows title="避雷" items={user.avoidances} tone="warning" />
+          {user.history_summary ? <p className="mt-2 rounded-md bg-white px-3 py-2 text-neutral-600">{user.history_summary}</p> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function MockBoardLocation({ location }: { location?: MockLocation }) {
+  if (!location) {
+    return <p className="rounded-md bg-[#fffdf8] p-4 text-sm text-neutral-500">尚未设置 AI 生成 GPS 定位。</p>;
+  }
+  return (
+    <div className="rounded-md border border-dz-line bg-[#fffdf8] p-4 text-sm leading-6">
+      <div className="font-black">{location.label}</div>
+      <div className="text-neutral-600">{location.city}{location.area ? ` · ${location.area}` : ""}{location.address ? ` · ${location.address}` : ""}</div>
+      <div className="mt-2 font-mono text-xs text-neutral-500">
+        lat={location.latitude ?? "-"} / lng={location.longitude ?? "-"} / reliability={location.reliability}
+      </div>
+    </div>
+  );
+}
+
+function MockBoardPois({ pois }: { pois: MockPoi[] }) {
+  if (!pois.length) {
+    return <p className="rounded-md bg-[#fffdf8] p-4 text-sm text-neutral-500">尚未生成 AI POI 数据。</p>;
+  }
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {pois.map((poi) => (
+        <article key={poi.id} className="rounded-md border border-dz-line bg-[#fffdf8] p-3 text-xs leading-5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="truncate font-black">{poi.name}</div>
+              <div className="mt-1 text-neutral-500">{poi.area} · {poi.category} · {poi.rating} 分 · 排队 {poi.queueMinutes} 分钟</div>
+            </div>
+            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-dz-orange">{poi.city ?? "AI 生成"}</span>
+          </div>
+          <ChipRows title="" items={poi.tags.slice(0, 5)} />
+          {poi.ugcSummary ? <p className="mt-2 text-neutral-600">{poi.ugcSummary}</p> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function MockBoardHistory({ users }: { users: MockUserFull[] }) {
+  const user = users[0];
+  if (!user) {
+    return <p className="rounded-md bg-[#fffdf8] p-4 text-sm text-neutral-500">生成老用户后会展示历史收藏、浏览、评分和 UGC。</p>;
+  }
+  const rows = [
+    ["历史收藏", user.saved_pois ?? []],
+    ["浏览记录", user.viewed_pois ?? []],
+    ["评分记录", user.rated_pois ?? []],
+    ["UGC 评价", user.ugc_reviews ?? []],
+  ] as const;
+  return (
+    <div className="space-y-3">
+      {rows.map(([title, items]) => (
+        <section key={title} className="rounded-md border border-dz-line bg-[#fffdf8] p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h5 className="text-sm font-black">{title}</h5>
+            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-neutral-500">{items.length} 条</span>
+          </div>
+          <div className="space-y-2">
+            {items.length ? items.map((item, index) => (
+              <pre key={index} className="overflow-auto rounded-md bg-white p-2 text-[11px] leading-5 text-neutral-700">
+                {JSON.stringify(item, null, 2)}
+              </pre>
+            )) : <p className="text-xs text-neutral-500">新用户或空白画像没有该类历史。</p>}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function MiniField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-white px-3 py-2">
+      <div className="text-[10px] font-bold text-neutral-400">{label}</div>
+      <div className="mt-1 truncate font-bold text-neutral-700">{value}</div>
+    </div>
+  );
+}
+
+function ChipRows({ title, items, tone = "default" }: { title: string; items: string[]; tone?: "default" | "warning" }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <div className="mt-2">
+      {title ? <div className="mb-1 text-[10px] font-bold text-neutral-400">{title}</div> : null}
+      <div className="flex flex-wrap gap-1">
+        {items.map((item) => (
+          <span
+            key={item}
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[10px] font-bold",
+              tone === "warning" ? "bg-yellow-50 text-yellow-700" : "bg-white text-dz-orange"
+            )}
+          >
+            {item}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2845,12 +3539,14 @@ function TraceHistoryView({
   status,
   activeTraceId,
   onOpenTrace,
+  onOpenMockTrace,
   onNewDemo
 }: {
   traces: TraceSummary[];
   status: "idle" | "loading" | "error";
   activeTraceId?: string;
   onOpenTrace: (traceId: string) => void;
+  onOpenMockTrace: (trace: AgentTrace) => void;
   onNewDemo: () => void;
 }) {
   if (status === "loading") {
@@ -2874,20 +3570,23 @@ function TraceHistoryView({
 
   if (status === "error") {
     return (
-      <section className="rounded-md border border-dz-line bg-[#fffdf8] p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h4 className="text-sm font-black">历史 Run</h4>
-          <button
-            type="button"
-            onClick={onNewDemo}
-            className="inline-flex items-center gap-1 rounded-full bg-dz-orange px-3 py-1.5 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32]"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新演示
-          </button>
-        </div>
-        <p className="text-sm leading-6 text-neutral-500">Trace API 暂时不可用。前端会继续展示当前静态或已加载的 Trace，不影响主规划流程。</p>
-      </section>
+      <>
+        <section className="rounded-md border border-dz-line bg-[#fffdf8] p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h4 className="text-sm font-black">历史 Run</h4>
+            <button
+              type="button"
+              onClick={onNewDemo}
+              className="inline-flex items-center gap-1 rounded-full bg-dz-orange px-3 py-1.5 text-xs font-black text-white shadow-sm transition hover:bg-[#e25a32]"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              新演示
+            </button>
+          </div>
+          <p className="text-sm leading-6 text-neutral-500">Trace API 暂时不可用。下方仍可使用过往 Mock 历史快捷演示查看完整 Debug Trace。</p>
+        </section>
+        <MockHistoryQuickDemos activeTraceId={activeTraceId} onOpenMockTrace={onOpenMockTrace} />
+      </>
     );
   }
 
@@ -2942,8 +3641,171 @@ function TraceHistoryView({
           暂无历史 run。先在左侧手机端发送一次规划，后端保存 Trace 后这里会出现记录。
         </p>
       )}
+      <MockHistoryQuickDemos activeTraceId={activeTraceId} onOpenMockTrace={onOpenMockTrace} />
     </section>
   );
+}
+
+function MockHistoryQuickDemos({
+  activeTraceId,
+  onOpenMockTrace
+}: {
+  activeTraceId?: string;
+  onOpenMockTrace: (trace: AgentTrace) => void;
+}) {
+  const demos = useMemo(() => createMockHistoryTraces(), []);
+  return (
+    <section className="mt-5 rounded-md border border-dz-line bg-[#fffdf8] p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-black">过往 Mock 历史快捷演示</h4>
+          <p className="mt-1 text-xs leading-5 text-neutral-500">
+            这 3 组是过往 Mock 的历史样例，可用来快捷演示完整 Debug Trace，不代表首屏真实 run。
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-dz-orange">3 mock runs</span>
+      </div>
+      <div className="grid gap-2">
+        {demos.map((trace) => (
+          <button
+            key={trace.id}
+            type="button"
+            onClick={() => onOpenMockTrace(trace)}
+            className={cn(
+              "rounded-md border p-3 text-left transition",
+              activeTraceId === trace.id ? "border-dz-orange bg-dz-soft" : "border-dz-line bg-white hover:border-dz-orange"
+            )}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-xs font-black text-dz-orange">{trace.id}</div>
+                <div className="mt-1 text-sm font-bold">{trace.user_goal}</div>
+              </div>
+              <span className="shrink-0 rounded-full bg-[#fbfaf7] px-2 py-0.5 text-[10px] font-bold text-neutral-500">
+                mock history
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-2 text-[11px] text-neutral-500">
+              <span>{trace.events.length} events</span>
+              <span>{trace.total_duration_ms}ms</span>
+              <span>{trace.runner_mode}</span>
+              <span>{trace.route_score ?? "-"} 分</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function createMockHistoryTraces(): AgentTrace[] {
+  return [
+    createMockHistoryTrace("mock-history-date-night", "今晚三里屯约会，想少排队", 92, "低排队和短距离移动同时命中，室内外搭配合理。"),
+    createMockHistoryTrace("mock-history-family-weekend", "周末带老人孩子去颐和园附近", 88, "人数、天气和室内备选都已检查，步行强度适中。"),
+    createMockHistoryTrace("mock-history-chat", "望京附近有什么好的日料店", 0, "普通问答链路，搜索到 13 家日料店并推荐 Top 5。", true),
+  ];
+}
+
+function createMockHistoryTrace(id: string, goal: string, score: number, summary: string, chatRun = false): AgentTrace {
+  const agents = [
+    "InteractionRouterAgent",
+    "ConstraintDiscoveryAgent",
+    "UserPreferenceAgent",
+    "ContextGroundingAgent",
+    ...(chatRun ? ["PlanExplanationAgent"] : ["PlanSolverAgent", "PlanEvaluatorAgent", "PlanExplanationAgent"]),
+  ];
+  const events: TraceEvent[] = agents.map((agent, index) => {
+    const typeByAgent: Record<string, TraceEvent["type"]> = {
+      InteractionRouterAgent: "agent_started",
+      ConstraintDiscoveryAgent: "constraint_discovered",
+      UserPreferenceAgent: "preference_detected",
+      ContextGroundingAgent: "candidate_retrieved",
+      PlanSolverAgent: "route_candidate_generated",
+      PlanEvaluatorAgent: "route_scored",
+      PlanExplanationAgent: chatRun ? "chat_answered" : "run_completed",
+    };
+    return {
+      id: `${id}-event-${index + 1}`,
+      type: typeByAgent[agent],
+      label: agent,
+      agent,
+      duration_ms: 120 + index * 45,
+      summary: index === 0 ? summary : `${agent} 已完成 AI 生成历史回放步骤。`,
+      output: {
+        reliability: agent === "ContextGroundingAgent" ? "generated_validated" : "verified",
+        observation: agent === "ContextGroundingAgent" ? "本样例使用过往 AI 生成真实结构 POI、UGC 和排队字段。" : undefined,
+        plan_scores: agent === "PlanEvaluatorAgent" ? demoRoutePlans.map((plan) => ({ plan_id: plan.id, score: plan.score, rank_reason: plan.highlights[0], score_breakdown: { preference: 24, queue: 20, distance: 18, ugc: 16 } })) : undefined,
+      },
+      fallback_used: false,
+      metadata: agent === "ContextGroundingAgent" ? { data_origin: chatRun ? "amap_api" : "ai_generated_dataset", provider_name: chatRun ? "amap_poi" : "mock_history_dataset" } : undefined,
+      tool_name: agent === "ContextGroundingAgent" ? (chatRun ? "poi_search.nearby" : "poi_search.nearby") : undefined,
+      tool_output: agent === "ContextGroundingAgent" ? {
+        provider: chatRun ? "amap_poi" : "mock_history_dataset",
+        data_origin: chatRun ? "amap_api" : "ai_generated_dataset",
+        reliability: chatRun ? "api_validated" : "generated_validated",
+        fallback_used: false,
+        search_results_count: chatRun ? 13 : undefined,
+        accepted_pois: chatRun ? [] : demoRoutePlans[0].stops.slice(0, 3).map((stop) => ({
+          id: stop.poiId,
+          name: stop.poiName,
+          area: stop.area,
+          rating: stop.rating,
+          queueMinutes: stop.queueMinutes,
+          reason: stop.reason,
+        })),
+        coordinate_confidence: "verified",
+      } : undefined,
+    };
+  });
+  return {
+    id,
+    user_goal: goal,
+    status: "completed",
+    total_duration_ms: events.reduce((sum, event) => sum + eventDuration(event), 0),
+    route_score: score || undefined,
+    runner_mode: "real_agent_ai_generated_data",
+    agent_strategy: buildMockHistoryStrategies(),
+    events,
+    metadata: {
+      mock_history: true,
+      data_origin: "ai_generated_dataset",
+      note: "过往 AI 生成数据历史快捷演示，用于查看完整 Debug Trace。",
+    },
+  };
+}
+
+function buildMockHistoryStrategies(): AgentStrategy[] {
+  return [
+    "InteractionRouterAgent",
+    "ConstraintDiscoveryAgent",
+    "UserPreferenceAgent",
+    "ContextGroundingAgent",
+    "PlanSolverAgent",
+    "PlanEvaluatorAgent",
+    "PlanExplanationAgent",
+  ].map((name) => ({
+    name,
+    responsibility: agentResponsibility(name),
+    inputs: ["mock history input"],
+    outputs: ["mock history output"],
+    tools: name === "ContextGroundingAgent" ? ["poi_search.nearby"] : [],
+    handoff_conditions: ["完成后交给下一 Agent"],
+    failure_fallback: "History 样例固定使用 Mock 数据，不调用真实 provider。",
+    trace_events: ["agent_started" as const],
+  }));
+}
+
+function agentResponsibility(name: string) {
+  const copy: Record<string, string> = {
+    InteractionRouterAgent: "判断用户输入类型和当前页面上下文。",
+    ConstraintDiscoveryAgent: "拆解目标、硬约束、软约束和缺失信息。",
+    UserPreferenceAgent: "读取用户长期偏好、历史行为和 Mock 画像。",
+    ContextGroundingAgent: "调用 POI 搜索、地图距离、天气等 provider 补齐事实数据。",
+    PlanSolverAgent: "生成多套候选路线。",
+    PlanEvaluatorAgent: "检查约束并排序方案。",
+    PlanExplanationAgent: "解释推荐理由、风险和 fallback 字段。",
+  };
+  return copy[name] ?? "Agent 历史回放节点。";
 }
 
 function buildAgentGroups(events: TraceEvent[], strategies: AgentStrategy[] = []): AgentEventGroup[] {
@@ -2974,7 +3836,7 @@ function buildAgentGroups(events: TraceEvent[], strategies: AgentStrategy[] = []
     const agentName = event.agent ?? event.handoff_from ?? event.handoff_to;
     const group = agentName
       ? ensureGroup(`agent:${agentName}`, agentName, agentName)
-      : ensureGroup("system", "Run Lifecycle");
+      : ensureGroup("system", "Run Lifecycle", "system");
     group.events.push(event);
     group.eventCount += 1;
     group.durationMs += eventDuration(event);
@@ -2992,10 +3854,8 @@ function buildAgentGroups(events: TraceEvent[], strategies: AgentStrategy[] = []
     orderedGroups.push(systemGroup);
   }
   for (const strategy of strategies) {
-    const group = groups.get(`agent:${strategy.name}`);
-    if (group?.events.length) {
-      orderedGroups.push(group);
-    }
+    const group = groups.get(`agent:${strategy.name}`) ?? ensureGroup(`agent:${strategy.name}`, strategy.name, strategy.name);
+    orderedGroups.push(group);
   }
   for (const group of groups.values()) {
     if (!orderedGroups.includes(group) && group.events.length) {
@@ -3361,6 +4221,127 @@ function extractObservations(event: TraceEvent): string[] {
   return observations;
 }
 
+// ─── LLM 请求/响应详情面板 ──────────────────────────────────────
+
+function LlmCallDetail({
+  llmRequest,
+  llmResponse,
+  metadata
+}: {
+  llmRequest: LlmRequestInfo;
+  llmResponse?: LlmResponseInfo;
+  metadata: TraceEventMetadata;
+}) {
+  const [showMessages, setShowMessages] = useState(false);
+  const [showResponse, setShowResponse] = useState(false);
+
+  return (
+    <section className="mt-5 rounded-md border border-dz-line bg-white p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-dz-orange" />
+        <h4 className="text-sm font-black">LLM 请求/响应详情</h4>
+      </div>
+
+      {/* 基本信息 */}
+      <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
+        {llmRequest.model && <Field label="模型" value={llmRequest.model} mono />}
+        {llmRequest.temperature != null && <Field label="Temperature" value={String(llmRequest.temperature)} mono />}
+        {llmRequest.max_tokens != null && <Field label="Max Tokens" value={String(llmRequest.max_tokens)} mono />}
+        {metadata.http_status_code != null && <Field label="HTTP 状态码" value={String(metadata.http_status_code)} mono />}
+        {metadata.request_duration_ms != null && <Field label="请求耗时" value={`${metadata.request_duration_ms}ms`} mono />}
+      </div>
+
+      {/* 请求消息 */}
+      {llmRequest.messages && llmRequest.messages.length > 0 && (
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => setShowMessages(!showMessages)}
+            className="flex items-center gap-1 text-xs font-bold text-dz-orange hover:underline"
+          >
+            <Shuffle className="h-3 w-3" />
+            {showMessages ? "收起" : "展开"}请求消息 ({llmRequest.messages.length} 条)
+          </button>
+          {showMessages && (
+            <div className="mt-2 space-y-2">
+              {llmRequest.messages.map((msg, i) => (
+                <div key={i} className="rounded-md border border-dz-line bg-[#fffdf8] p-3">
+                  <span className={cn(
+                    "mr-2 rounded-full px-2 py-0.5 text-[10px] font-bold",
+                    msg.role === "system" ? "bg-purple-50 text-purple-700" :
+                    msg.role === "user" ? "bg-blue-50 text-blue-700" :
+                    msg.role === "assistant" ? "bg-green-50 text-green-700" :
+                    "bg-[#f1eee7] text-neutral-600"
+                  )}>
+                    {msg.role}
+                  </span>
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-neutral-700 [scrollbar-width:thin]">
+                    {msg.content}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 响应内容 */}
+      {llmResponse && (
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => setShowResponse(!showResponse)}
+            className="flex items-center gap-1 text-xs font-bold text-dz-orange hover:underline"
+          >
+            <Shuffle className="h-3 w-3" />
+            {showResponse ? "收起" : "展开"}响应内容
+          </button>
+          {showResponse && (
+            <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-[#171717] p-3 text-[11px] leading-5 text-[#d8f8d8] [scrollbar-width:thin]">
+              {JSON.stringify(llmResponse, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Token 用量 */}
+      {(llmResponse?.usage || metadata.token_usage) && (
+        <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+          <MiniStat
+            label="Input Tokens"
+            value={String(llmResponse?.usage?.prompt_tokens ?? metadata.token_usage?.input_tokens ?? 0)}
+          />
+          <MiniStat
+            label="Output Tokens"
+            value={String(llmResponse?.usage?.completion_tokens ?? metadata.token_usage?.output_tokens ?? 0)}
+          />
+          <MiniStat
+            label="Total Tokens"
+            value={String(llmResponse?.usage?.total_tokens ?? metadata.token_usage?.total_tokens ?? 0)}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── LLM Streaming 输出面板 ──────────────────────────────────────
+
+function LlmStreamingPanel({ streamingTokens }: { streamingTokens: string }) {
+  return (
+    <section className="mt-5 rounded-md border border-dz-line bg-white p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-dz-orange" />
+        <h4 className="text-sm font-black">LLM Streaming 输出</h4>
+        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">streaming</span>
+      </div>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-[#171717] p-3 text-[11px] leading-5 text-[#d8f8d8] [scrollbar-width:thin]">
+        {streamingTokens}
+      </pre>
+    </section>
+  );
+}
+
 function getTraceDetail(event: TraceEvent) {
   const input = [
     ...formatPayload(event.input, "事件输入"),
@@ -3448,6 +4429,17 @@ function getAgentGroupStatus(
   // 1. 有 run_failed → failed
   if (group.events.some((event) => event.type === "run_failed")) {
     return "failed";
+  }
+
+  // Run Lifecycle 特殊判断（group.id === "system"）
+  if (group.id === "system") {
+    if (group.events.some((event) => event.type === "run_completed")) {
+      return "completed";
+    }
+    if (group.events.some((event) => event.type === "run_started")) {
+      return "running";
+    }
+    return "pending";
   }
 
   // 2. 当前正在执行的 Agent → running

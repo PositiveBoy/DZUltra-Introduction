@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDemoStore, type ProviderStatus } from "@/stores/use-demo-store";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_DZULTRA_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_DZULTRA_API_BASE_URL ?? "/api";
 
 // 后端 /providers/status 返回的 provider 结构
 type ApiProviderStatus = {
@@ -104,7 +104,8 @@ export function AgentStatusBar() {
     providerStatuses,
     setProviderStatuses,
     setSelectedTraceEventId,
-    setActiveAgentStep,
+    selectedAgentStep,
+    setSelectedAgentStep,
     setActiveDebugTab,
     setActiveDebugSubTab,
     mobileView
@@ -189,6 +190,16 @@ export function AgentStatusBar() {
     }
   }
 
+  function handleAgentClick(agentId: string) {
+    setSelectedAgentStep(agentId);
+    const event = events.find((e) => e.agent === agentId);
+    setSelectedTraceEventId(event?.id);
+    setActiveDebugTab("trace");
+    requestAnimationFrame(() => {
+      document.getElementById(`debug-agent-${agentId}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }
+
   return (
     <div className="relative z-50 flex h-11 items-center gap-4 overflow-x-auto border-b border-dz-line bg-white/60 pl-0 pr-4 text-xs [scrollbar-width:thin]">
       {/* AI 工作台 标题 - 固定不滚动，向左溢出覆盖外层左 padding */}
@@ -214,11 +225,7 @@ export function AgentStatusBar() {
           return (
             <button
               key={step.id}
-              onClick={() => {
-                setActiveAgentStep(step.id);
-                const event = events.find((e) => e.agent === step.id);
-                if (event) setSelectedTraceEventId(event.id);
-              }}
+              onClick={() => handleAgentClick(step.id)}
               className="flex items-center gap-1 transition-colors"
               title={step.id}
             >
@@ -230,6 +237,8 @@ export function AgentStatusBar() {
                     ? "bg-blue-100 text-blue-700"
                     : status === "completed"
                       ? "bg-green-100 text-green-700"
+                      : selectedAgentStep === step.id
+                        ? "bg-dz-soft text-dz-orange ring-1 ring-dz-orange/40"
                       : "bg-neutral-100 text-neutral-400"
                   }
                 `}

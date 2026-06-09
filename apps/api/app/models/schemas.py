@@ -24,6 +24,7 @@ TraceEventType = Literal[
     "chat_answered",
     "user_refinement_received",
     "task_switched",
+    "llm_chunk",
     "run_completed",
     "run_failed",
 ]
@@ -76,7 +77,7 @@ ConstraintSource = Literal[
     "system_default",
     "llm_inference",
 ]
-ConstraintReliability = Literal["verified", "mocked", "predicted", "inferred", "missing"]
+ConstraintReliability = Literal["verified", "generated_validated", "mocked", "predicted", "inferred", "missing"]
 ConstraintStatus = Literal[
     "discovered",
     "needs_clarification",
@@ -93,6 +94,9 @@ ProviderCategory = Literal["map", "weather", "llm"]
 
 
 MockUserType = Literal["new", "regular"]
+RunnerMode = Literal["real_agent_ai_generated_data", "deterministic_mock", "openai_agents_sdk"]
+GeneratedDataOrigin = Literal["ai_generated_dataset", "fallback_template", "provider_api", "user_input"]
+GeneratedDataReliability = Literal["verified", "generated_validated", "fallback_template", "missing"]
 
 
 class MockUser(BaseModel):
@@ -101,6 +105,14 @@ class MockUser(BaseModel):
     user_type: MockUserType = "regular"
     city: str | None = None
     scenario: str
+    age: int | None = Field(default=None, ge=0)
+    gender: str | None = None
+    occupation: str | None = None
+    lifestyle_tags: list[str] = Field(default_factory=list)
+    home_area: str | None = None
+    work_area: str | None = None
+    frequent_areas: list[str] = Field(default_factory=list)
+    current_location: dict[str, Any] | None = None
     default_goal: str | None = None
     group_size: int | None = None
     time_window: str | None = None
@@ -110,6 +122,16 @@ class MockUser(BaseModel):
     avoidances: list[str] = Field(default_factory=list)
     priority_weights: dict[str, float] = Field(default_factory=dict)
     explain_focus: list[str] = Field(default_factory=list)
+    saved_pois: list[dict[str, Any]] = Field(default_factory=list)
+    viewed_pois: list[dict[str, Any]] = Field(default_factory=list)
+    rated_pois: list[dict[str, Any]] = Field(default_factory=list)
+    ugc_reviews: list[dict[str, Any]] = Field(default_factory=list)
+    history_summary: str | None = None
+    data_origin: GeneratedDataOrigin = "ai_generated_dataset"
+    provider_name: str = "ai_generated_dataset"
+    generated_by: str | None = "MockDataAgent"
+    schema_version: str = "v3-ai-generated-user-001"
+    data_reliability: GeneratedDataReliability = "generated_validated"
 
 
 class RecommendedDish(BaseModel):
@@ -132,7 +154,7 @@ class MockPoi(BaseModel):
     id: str
     name: str
     category: PoiCategory
-    source: str = "mock"
+    source: str = "ai_generated_dataset"
     reliability: dict[str, str] = Field(default_factory=dict)
     field_reliability: dict[str, ConstraintReliability] = Field(default_factory=dict)
     enrichment_reliability: dict[str, ConstraintReliability] = Field(default_factory=dict)
@@ -168,6 +190,11 @@ class MockPoi(BaseModel):
     taste_rating: float | None = None
     environment_rating: float | None = None
     service_rating: float | None = None
+    data_origin: GeneratedDataOrigin = "ai_generated_dataset"
+    provider_name: str = "ai_generated_dataset"
+    generated_by: str | None = "MockDataAgent"
+    schema_version: str = "v3-ai-generated-poi-001"
+    data_reliability: GeneratedDataReliability = "generated_validated"
 
 
 class AgentStrategy(BaseModel):
@@ -494,7 +521,7 @@ class RefinementDiff(BaseModel):
 
 
 class GenerationMetadata(BaseModel):
-    runner_mode: Literal["deterministic_mock", "openai_agents_sdk"] = "deterministic_mock"
+    runner_mode: RunnerMode = "real_agent_ai_generated_data"
     fallback_used: bool = False
     selected_plan_id: str | None = None
     plan_count: int = 1
@@ -531,7 +558,7 @@ class AgentTrace(BaseModel):
     total_duration_ms: int
     route_score: int | None = None
     events: list[TraceEvent] = Field(default_factory=list)
-    runner_mode: Literal["deterministic_mock", "openai_agents_sdk"] = "deterministic_mock"
+    runner_mode: RunnerMode = "real_agent_ai_generated_data"
     sdk_trace_id: str | None = None
     agent_strategy: list[AgentStrategy] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -543,7 +570,7 @@ class TraceSummary(BaseModel):
     status: Literal["running", "completed", "failed"]
     total_duration_ms: int
     route_score: int | None = None
-    runner_mode: Literal["deterministic_mock", "openai_agents_sdk"] = "deterministic_mock"
+    runner_mode: RunnerMode = "real_agent_ai_generated_data"
     event_count: int
     selected_plan_id: str | None = None
 
@@ -589,6 +616,8 @@ class InteractionRequest(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     clarification_answers: dict[str, Any] = Field(default_factory=dict)
     preference_detection_enabled: bool = True
+    require_confirmation: bool = False
+    confirmed_requirements: bool = False
 
 
 class RoutePlanResponse(BaseModel):
@@ -688,23 +717,33 @@ class StaticPreviewResponse(BaseModel):
 
 class GenerateUserRequest(BaseModel):
     user_type: MockUserType = "regular"
-    scenario: str = "周六下午本地约会路线"
+    scenario: str = "一键生成点仔 Ultra 演示用户"
     city: str = "北京"
+    area: str | None = None
+    customization: str | None = None
+    current_location: dict[str, Any] | None = None
 
 
 class GeneratePoisRequest(BaseModel):
     city: str = "北京"
     area: str = "三里屯"
-    theme: str = "低排队约会路线"
-    count: int = Field(default=6, ge=3, le=20)
+    theme: str | None = None
+    customization: str | None = None
+    count: int = Field(default=30, ge=3, le=30)
 
 
 class GeneratedMockResponse(BaseModel):
     fallback_used: bool = True
-    source: Literal["deterministic_template", "longcat", "openai_agents_sdk"] = "deterministic_template"
+    source: Literal["ai_generated_dataset", "fallback_template", "longcat", "openai_agents_sdk"] = "ai_generated_dataset"
+    data_origin: GeneratedDataOrigin = "ai_generated_dataset"
+    provider_name: str = "ai_generated_dataset"
+    generated_by: str = "MockDataAgent"
+    schema_version: str = "v3-ai-generated-dataset-001"
+    reliability: GeneratedDataReliability = "generated_validated"
     metadata: dict[str, Any] = Field(default_factory=dict)
     users: list[MockUser] = Field(default_factory=list)
     pois: list[MockPoi] = Field(default_factory=list)
+    locations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProviderRuntimeStatus(BaseModel):

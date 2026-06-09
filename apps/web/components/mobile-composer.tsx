@@ -270,6 +270,8 @@ export function MobileComposer({
   const placeholder =
     view === "plans" || view === "refining" || view === "selected"
       ? "试试说\"换掉咖啡馆\"或\"不想走太多\""
+      : keyboardOpen && inputMode === "text"
+        ? "按住说话"
       : inputMode === "voice"
         ? "按住说话"
         : "发消息或按住说话";
@@ -415,7 +417,7 @@ export function MobileComposer({
       <div
         className={cn(
           "relative z-20 flex h-11 items-center gap-2 rounded-full border border-white transition-colors",
-          "overflow-visible py-[11px] pl-4 pr-[4px] shadow-[0_10px_24px_rgba(0,0,0,0.055),0_0_22px_rgba(255,102,43,0.08)]",
+          "overflow-visible py-[11px] pl-4 pr-[4px] shadow-[0_10px_24px_rgba(0,0,0,0.055)]",
           showVoiceControl ? voiceFieldStateClass : "bg-[rgba(243,243,243,0.9)] text-[#727272]"
         )}
         onPointerDown={beginTextLongPress}
@@ -533,7 +535,7 @@ export function MobileComposer({
             <button
               onClick={() => onSubmit()}
               className={cn(
-                "flex shrink-0 items-center justify-center rounded-full bg-[#f26b43] bg-contain bg-center bg-no-repeat text-white",
+                "flex shrink-0 items-center justify-center rounded-full bg-[#ff6430] bg-contain bg-center bg-no-repeat text-white shadow-[0_6px_12px_rgba(255,100,48,0.2)]",
                 "h-[35px] w-[35px]"
               )}
               style={{ backgroundImage: "url('/dianping-assets/submit.png')" }}

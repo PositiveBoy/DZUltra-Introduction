@@ -9,10 +9,10 @@ import {
   Circle,
   Clock3,
   ExternalLink,
-  Keyboard,
   Mic,
   MessageSquarePlus,
   Navigation,
+  Pencil,
   Plus,
   ShoppingBag,
   Sparkles,
@@ -35,8 +35,10 @@ import {
   createLocalRefinementTrace,
   deleteUserPreferenceOnApi,
   demoRoutePlans,
+  getTrace,
   interactRespond,
   interactRespondStream,
+  listTraces,
   listUserPreferences,
   planRoute,
   presetPrompts,
@@ -44,9 +46,10 @@ import {
   updateUserPreferenceOnApi
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useDemoStore } from "@/stores/use-demo-store";
+import { useDemoStore, SKELETON_AGENT_STRATEGIES } from "@/stores/use-demo-store";
 import type {
   AgentStrategy,
+  AgentTrace,
   ApiRoutePlan,
   ChatResponsePayload,
   ClarificationCard,
@@ -60,6 +63,7 @@ import type {
   RefinementDiff,
   RequirementSummary,
   TraceEvent,
+  TraceSummary,
   TransportMode
 } from "@/types/dzultra";
 import { PromptCapsule } from "./prompt-capsule";
@@ -67,7 +71,6 @@ import type { PromptEntry } from "./prompt-capsule";
 import { MobileComposer } from "./mobile-composer";
 import { PlanCard } from "./plan-card";
 import { ExpandedPlanSheet } from "./expanded-plan-sheet";
-import { PlanSkeleton } from "./plan-skeleton";
 
 type PoiHint = {
   id: string;
@@ -85,10 +88,18 @@ type PoiHint = {
   reliability?: Record<string, string>;
 };
 
+type AnsweringAgentStep = {
+  id: string;
+  label: string;
+  status: "running" | "completed";
+  detail?: string;
+};
+
 type DirectAnswer = {
   question: string;
   answer: string;
   poiHints: PoiHint[];
+  agentSteps?: AnsweringAgentStep[];
   fallback_used?: boolean;
   fallback_reason?: string;
   poi_provider?: string;
@@ -119,10 +130,10 @@ const FLOW_BLOCK_CLASS = `min-h-[620px] snap-start`;
 
 const defaultClarification: ClarificationState = {
   people: 2,
-  timeRange: "今天下午 14:00-18:00",
-  food: "吃正餐 + 甜品",
-  budget: "人均 ¥100-200",
-  taste: "微辣可以"
+  timeRange: "待确认",
+  food: "待确认",
+  budget: "待确认",
+  taste: "待确认"
 };
 
 type ClarificationCardAnswers = Record<string, string | string[]>;
@@ -150,6 +161,7 @@ export function MobileShell() {
     activeUserId,
     activeMockLocation,
     preferenceDetectionEnabled,
+    requireRequirementConfirmation,
     dataAuthorizationEnabled,
     userPreferences,
     flowBlocks,
@@ -166,6 +178,7 @@ export function MobileShell() {
     setActiveTrace,
     setActiveTraceMeta,
     appendTraceEvent,
+    appendLlmChunk,
     finalizeActiveTrace,
     setCurrentRoutePlans,
     setUserPreferences,
@@ -174,7 +187,9 @@ export function MobileShell() {
     clearFlowBlocks,
     refinementCount,
     incrementRefinementCount,
-    resetRefinementCount
+    resetRefinementCount,
+    pendingReplayTrace,
+    clearPendingReplayTrace
   } = useDemoStore();
   const [draft, setDraft] = useState("");
   const [submittedPrompt, setSubmittedPrompt] = useState(presetPrompts[0]);
@@ -203,6 +218,7 @@ export function MobileShell() {
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
   const [historyPageOpen, setHistoryPageOpen] = useState(false);
+  const [sidebarTraces, setSidebarTraces] = useState<TraceSummary[]>([]);
   const [promptEditDraft, setPromptEditDraft] = useState("");
   const [expandedPlanId, setExpandedPlanId] = useState<string | undefined>();
   const [homeSyncedPlanId, setHomeSyncedPlanId] = useState<string | undefined>();
@@ -500,13 +516,21 @@ export function MobileShell() {
       setDynamicClarificationCards(responseCards);
       setRequirementSummary(routeResponse.requirement_summary);
 
-      if (nextPlans.length) {
+      // 防御：空壳 plan（stops 为空）不切换到 plans 视图
+      const hasValidPlans = nextPlans.length > 0 && nextPlans.some((p: DemoRoutePlan) => p.stops && p.stops.length > 0);
+      if (hasValidPlans) {
         setPlans(nextPlans);
         setCurrentRoutePlans(nextPlans);
         setSelectedPlanId(routeResponse.selected_plan_id ?? nextPlans[0].id);
         setExpandedStopId(nextPlans[0].stops[0]?.poiId);
         setActiveView("result");
         setMobileView("plans");
+      } else if (routeResponse.planning_status === "needs_clarification" || routeResponse.clarification_cards?.length) {
+        // 需要追问时走 clarifying
+        setMobileView("clarifying");
+      } else if (routeResponse.planning_status === "needs_confirmation") {
+        // 需要确认时走 summary
+        setMobileView("summary");
       }
       setSelectedTraceEventId(
         traceEvents.find((event) => event.type === "tool_called")?.id ?? traceEvents[0]?.id
@@ -613,6 +637,155 @@ export function MobileShell() {
     () => selectedPlan?.transports.find((item) => item.mode === selectedTransportMode) ?? selectedPlan?.transports[0],
     [selectedPlan, selectedTransportMode]
   );
+
+  // 侧边栏打开时获取 trace 历史
+  useEffect(() => {
+    if (!settingsDrawerOpen) return;
+    let cancelled = false;
+    listTraces()
+      .then((items) => { if (!cancelled) setSidebarTraces(items); })
+      .catch(() => { if (!cancelled) setSidebarTraces([]); });
+    return () => { cancelled = true; };
+  }, [settingsDrawerOpen]);
+
+  // 选中历史 trace：加载完整 trace 并跳转
+  async function handleSelectTrace(traceId: string) {
+    try {
+      const trace = await getTrace(traceId);
+      setActiveTrace(trace);
+      setSelectedTraceEventId(trace.events[0]?.id);
+      setSettingsDrawerOpen(false);
+      setHistoryPageOpen(false);
+      startMockHistoryReplay(trace);
+    } catch {
+      // 加载失败，忽略
+    }
+  }
+
+  // ── Mock 历史渐进式回放 ──
+  // 点击 Mock 历史后，用 setTimeout 逐步追加 flowBlocks、逐步切换 mobileView，
+  // 模拟真实 Agent 流程的渐进式展示。
+  function startMockHistoryReplay(trace: AgentTrace) {
+    // 先中断之前的 SSE 流
+    if (streamAbortRef.current) {
+      streamAbortRef.current();
+      streamAbortRef.current = null;
+    }
+
+    const isChat = trace.events.some((e) => e.type === "chat_answered");
+    const goal = trace.user_goal;
+
+    // 清空旧状态
+    setSubmittedPrompt(goal);
+    setDraft("");
+    setKeyboardOpen(false);
+    setPlans([]);
+    setCurrentRoutePlans([]);
+    setSelectedPlanId(undefined);
+    setConfirmedClarification(defaultClarification);
+    setConfirmedClarificationCards([]);
+    setConfirmedClarificationCardAnswers({});
+    setHasConfirmedClarification(false);
+    setHasConfirmedSummary(false);
+    setPostClarificationStep(0);
+    clearFlowBlocks();
+    setHasEnteredPlanning(false);
+    setDirectAnswer(undefined);
+    setRequirementSummary(undefined);
+    setActiveTrace(trace);
+    setSelectedTraceEventId(trace.events[0]?.id);
+
+    if (isChat) {
+      // 问答类：先显示 Agent 思考中，然后逐步推进摘要行，最后流式出答案
+      setMobileView("answering");
+      setApiNotice("Mock 历史回放：Agent 正在理解你的问题…");
+
+      // 初始：只有第一步 running
+      setDirectAnswer({
+        question: goal,
+        answer: "",
+        poiHints: [],
+        agentSteps: [
+          { id: "step-understand", label: "理解你的需求中…", status: "running" },
+        ],
+        answer_provider: "LongCat LLM",
+        poi_provider: "amap_poi",
+      });
+
+      // 800ms：理解完成 + 搜索中
+      window.setTimeout(() => {
+        setDirectAnswer((prev) => prev ? {
+          ...prev,
+          agentSteps: [
+            { id: "step-understand", label: "理解你的需求", status: "completed", detail: "已识别为附近搜索" },
+            { id: "step-search", label: "搜索中…", status: "running" },
+          ],
+        } : prev);
+        setApiNotice("Mock 历史回放：正在搜索附近 POI…");
+      }, 800);
+
+      // 1600ms：搜索完成 + 输出回答
+      window.setTimeout(() => {
+        const mockAnswer = getMockChatAnswer(goal);
+        const mockPois = getMockChatPois(goal);
+        setDirectAnswer((prev) => prev ? {
+          ...prev,
+          answer: mockAnswer,
+          poiHints: mockPois,
+          agentSteps: [
+            { id: "step-understand", label: "理解你的需求", status: "completed", detail: "已识别为附近搜索" },
+            { id: "step-search", label: "搜索到 " + mockPois.length + " 家相关店铺", status: "completed", detail: "已筛选 Top " + Math.min(5, mockPois.length) },
+            { id: "step-answer", label: "生成回答", status: "completed" },
+          ],
+        } : prev);
+        setApiNotice("Mock 历史回放：回答已生成。");
+      }, 1600);
+    } else {
+      // 路线规划类：渐进式回放
+      // Step 1: running
+      setMobileView("running");
+      setApiNotice("Mock 历史回放：Agent 正在分析需求…");
+
+      // Step 2: clarifying (800ms)
+      window.setTimeout(() => {
+        setMobileView("clarifying");
+        setApiNotice("Mock 历史回放：需要补全关键信息…");
+      }, 800);
+
+      // Step 3: auto-confirm clarification (1600ms)
+      window.setTimeout(() => {
+        setHasConfirmedClarification(true);
+        setConfirmedClarification(clarification);
+        setPostClarificationStep(0);
+        setMobileView("running");
+        setApiNotice("Mock 历史回放：已吸收补全信息，正在检索候选…");
+      }, 1600);
+
+      // Step 4: summary (2400ms)
+      window.setTimeout(() => {
+        setMobileView("summary");
+        setApiNotice("Mock 历史回放：请确认需求总结…");
+      }, 2400);
+
+      // Step 5: auto-confirm summary → plans (3200ms)
+      window.setTimeout(() => {
+        setHasConfirmedSummary(true);
+        setPlans(demoRoutePlans);
+        setCurrentRoutePlans(demoRoutePlans);
+        setSelectedPlanId(demoRoutePlans[0].id);
+        setMobileView("plans");
+        setApiNotice(`Mock 历史回放：已生成 ${demoRoutePlans.length} 套方案。`);
+      }, 3200);
+    }
+  }
+
+  // 监听 store 中的 pendingReplayTrace，由 DebugTracePanel 通过 startMockHistoryReplay 触发
+  useEffect(() => {
+    if (pendingReplayTrace) {
+      startMockHistoryReplay(pendingReplayTrace);
+      clearPendingReplayTrace();
+    }
+  }, [pendingReplayTrace]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     promptEditorOpenRef.current = promptEditorOpen;
@@ -807,7 +980,16 @@ export function MobileShell() {
       clearFlowBlocks();
       setHasEnteredPlanning(false);
     }
-    setActiveTrace(undefined);
+    setActiveTrace({
+      id: `trace-running-${Date.now()}`,
+      user_goal: message,
+      status: "running",
+      total_duration_ms: 0,
+      runner_mode: "real_agent_ai_generated_data",
+      agent_strategy: SKELETON_AGENT_STRATEGIES,
+      events: [],
+      metadata: { running: true, note: "正在等待后端 Agent 响应…" },
+    });
     setDynamicClarificationCards([]);
     setClarificationCardAnswers({});
     setClarificationInputNotice("");
@@ -827,7 +1009,9 @@ export function MobileShell() {
         : ["约会", "看展"]),
       preference_detection_enabled: preferenceDetectionEnabled,
       clarification_answers: overrides.clarification_answers,
-      interaction_context: overrides.interaction_context as InteractionContext | undefined
+      interaction_context: overrides.interaction_context as InteractionContext | undefined,
+      require_confirmation: requireRequirementConfirmation,
+      confirmed_requirements: overrides.confirmed_requirements
     };
 
     // 中断之前的 SSE 流
@@ -845,6 +1029,9 @@ export function MobileShell() {
       },
       onTraceEvent: (event: TraceEvent) => {
         appendTraceEvent(event);
+      },
+      onLlmChunk: (chunk) => {
+        appendLlmChunk(chunk.purpose, chunk.content, false);
       },
       onResponseComplete: (response) => {
         streamAbortRef.current = null;
@@ -878,8 +1065,11 @@ export function MobileShell() {
     setSubmittedPrompt(goal);
     setDirectAnswer({
       question: goal,
-      answer: routePlanningEnabled ? "正在检索附近 POI 并规划路线…" : "正在检索附近 POI，并交给 ChatAnswerAgent 生成直接回答。",
-      poiHints: []
+      answer: "",
+      poiHints: [],
+      agentSteps: [
+        { id: "step-understand", label: "理解你的需求中…", status: "running" },
+      ],
     });
     setApiNotice("正在调用 /interactions/respond：由后端 InteractionRouterAgent 决定分流。");
 
@@ -917,9 +1107,10 @@ export function MobileShell() {
 
   function confirmSummary() {
     setHasConfirmedSummary(true);
-    startInteractionRequest(submittedPrompt, {
+    startInteractionRequest("确认需求，开始规划", {
       plan_mode: true,
       clarification_answers: buildClarificationAnswers(clarification, dynamicClarificationCards, clarificationCardAnswers),
+      confirmed_requirements: true,
       interaction_context: {
         page: "summary",
         trace_id: activeTrace?.id
@@ -1154,7 +1345,7 @@ export function MobileShell() {
               ref={flowMainRef}
               onScroll={(event) => updateFlowIndexFromScroll(event.currentTarget)}
               className={cn(
-                "absolute inset-0 z-10 overflow-y-auto overscroll-contain px-4 pt-[120px] pb-[100px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden snap-y snap-proximity [&_[data-flow-block]]:scroll-mt-[260px]",
+                "absolute inset-0 z-10 overflow-y-auto overscroll-contain px-4 pt-[120px] pb-[160px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden snap-y snap-proximity [&_[data-flow-block]]:scroll-mt-[260px]",
                 mobileView === "start" && "px-[42px] pt-[120px] pb-[100px]"
               )}
               style={
@@ -1216,6 +1407,7 @@ export function MobileShell() {
                   expandedStopId={expandedStopId}
                   completedTodoIds={completedTodoIds}
                   onEditPrompt={openPromptEditor}
+                  durationMs={activeTrace?.total_duration_ms ?? 0}
                   onAgentStepClick={(agentName) => {
                     setActiveAgentStep(agentName);
                     const event = activeTrace?.events?.find((e) => e.agent === agentName);
@@ -1253,6 +1445,8 @@ export function MobileShell() {
                     setSettingsDrawerOpen(false);
                   }}
                   onOpenHistory={() => setHistoryPageOpen(true)}
+                  traces={sidebarTraces}
+                  onSelectTrace={handleSelectTrace}
                 />
               )}
             </AnimatePresence>
@@ -1264,6 +1458,8 @@ export function MobileShell() {
                     setHistoryPageOpen(false);
                     setSettingsDrawerOpen(false);
                   }}
+                  traces={sidebarTraces}
+                  onSelectTrace={handleSelectTrace}
                 />
               )}
             </AnimatePresence>
@@ -1571,16 +1767,13 @@ function EntryView({
 
         <button
           onClick={onUltraEnter}
-          className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-[#ffe1d5] bg-[#fff8f4] px-3 py-3 text-left shadow-sm"
+          className="mt-4 w-full"
         >
-          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f26b43] text-white">
-            <Sparkles className="h-5 w-5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[15px] font-black text-[#20283a]">点仔 Ultra · 本地路线智能规划</span>
-            <span className="mt-0.5 block truncate text-[12px] font-semibold text-[#8a6470]">吃饭、看展、少排队，一次生成多套路线</span>
-          </span>
-          <ChevronRight className="h-5 w-5 text-[#f26b43]" />
+          <img
+            src="/dianping-assets/banner.png"
+            alt="点仔 Ultra · 本地路线智能规划"
+            className="w-full rounded-2xl shadow-sm"
+          />
         </button>
 
         {syncedPlan && (
@@ -2507,6 +2700,8 @@ function PromptEditorOverlay({
 }) {
   const prefersReducedMotion = useReducedMotion();
   const overlayDuration = prefersReducedMotion ? 0 : 0.22;
+  const [voiceState, setVoiceState] = useState<"idle" | "recording" | "cancel">("idle");
+  const voiceStartYRef = useRef<number | null>(null);
 
   // Escape 键取消编辑
   useEffect(() => {
@@ -2521,27 +2716,57 @@ function PromptEditorOverlay({
 
   return (
     <motion.div
-      className="absolute inset-0 z-40 overflow-hidden p-5"
-      style={{
-        background: "var(--dz-blur-edit-overlay, rgba(255, 255, 255, 0.48))",
-        backdropFilter: `blur(var(--dz-blur-edit-radius, 12px))`,
-        WebkitBackdropFilter: `blur(var(--dz-blur-edit-radius, 12px))`
-      }}
+      className="absolute inset-0 z-40 overflow-hidden bg-white"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: overlayDuration }}
-      onClick={onCancel}
     >
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -left-[13px] top-0 h-[155px] w-[359px] bg-[rgba(231,254,255,0.3)] blur-[50px]" />
+        <div className="absolute left-[204px] top-0 h-[155px] w-[210px] bg-[rgba(248,230,255,0.2)] blur-[50px]" />
+      </div>
+      <header className="relative z-10">
+        <DianpingStatusBar />
+        <div className="mt-0 grid grid-cols-[44px_1fr_44px] items-start gap-2 px-6">
+          <button
+            onClick={onCancel}
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white shadow-[0_8px_40px_rgba(0,0,0,0.12)]"
+            aria-label="取消编辑"
+          >
+            <span
+              aria-hidden="true"
+              className="block h-5 w-5 bg-contain bg-center bg-no-repeat"
+              style={{ backgroundImage: "url('/dianping-assets/H5_Back@3x.png')" }}
+            />
+          </button>
+          <div className="mt-2 flex min-w-0 justify-center">
+            <span className="max-w-[210px] truncate rounded-full border border-white bg-white/60 px-4 py-2 text-[13px] font-normal leading-4 text-[#777777] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.03)] backdrop-blur">
+              编辑本轮需求
+            </span>
+          </div>
+          <button
+            onClick={onSubmit}
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white shadow-[0_8px_40px_rgba(0,0,0,0.12)]"
+            aria-label="提交编辑"
+          >
+            <span
+              aria-hidden="true"
+              className="block h-[19px] w-[19px] bg-contain bg-center bg-no-repeat"
+              style={{ backgroundImage: "url('/dianping-assets/list.png')" }}
+            />
+          </button>
+        </div>
+      </header>
       <motion.section
-        initial={{ y: 18, scale: 0.98 }}
-        animate={{ y: 0, scale: 1 }}
-        exit={{ y: 12, scale: 0.98 }}
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 12 }}
         transition={{ duration: overlayDuration }}
-        onClick={(event) => event.stopPropagation()}
-        className="mt-[142px] rounded-[28px] bg-white/94 p-5 shadow-[0_24px_80px_rgba(32,40,58,0.18)] backdrop-blur"
+        className="relative z-10 px-[66px] pt-[170px]"
       >
-        <p className="text-xs font-black text-[#4f68ff]">编辑已发送需求</p>
+        <h2 className="text-[24px] font-semibold leading-[34px] text-black">直接编辑需求</h2>
+        <p className="mt-1 text-[16px] font-normal leading-[22px] text-[#999999]">改完点右侧发送，我会重新规划</p>
         <textarea
           autoFocus
           value={value}
@@ -2552,21 +2777,62 @@ function PromptEditorOverlay({
               onSubmit();
             }
           }}
-          className="mt-3 min-h-[132px] w-full resize-none rounded-2xl border border-[#dfe4ef] bg-[#fbfcff] px-4 py-3 text-lg font-black leading-8 text-[#20283a] outline-none focus:border-[#4f68ff]"
+          className="mt-8 min-h-[180px] w-full resize-none border-0 bg-transparent p-0 text-[24px] font-semibold leading-[34px] text-black outline-none placeholder:text-[#b8b8b8]"
+          placeholder="周末想找一条轻松拍照路线，最好少走路"
         />
-        <p className="mt-3 text-xs font-semibold leading-5 text-neutral-500">
-          重新提交后会清空当前 Agent 链并重新规划；旧请求若稍后返回，前端会忽略它。
-        </p>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <button onClick={onCancel} className="rounded-2xl bg-[#f1f2f5] px-4 py-3 text-sm font-black text-[#687083]">
-            取消
-          </button>
-          <button onClick={onSubmit} className="rounded-2xl bg-[#20283a] px-4 py-3 text-sm font-black text-white">
-            重新提交
-          </button>
-        </div>
       </motion.section>
-      <div className="absolute bottom-0 left-0 right-0" onClick={(event) => event.stopPropagation()}>
+      <div className="absolute bottom-[342px] left-0 right-0 z-20 px-[25px] pb-4">
+        <div
+          className={cn(
+            "flex h-11 items-center gap-2 rounded-full border border-white py-[11px] pl-4 pr-1 shadow-[0_10px_24px_rgba(0,0,0,0.055)] transition",
+            voiceState === "recording" && "bg-[rgba(15,111,255,0.95)] text-white",
+            voiceState === "cancel" && "bg-[rgba(255,165,178,0.95)] text-[#f70000]",
+            voiceState === "idle" && "bg-[rgba(243,243,243,0.9)] text-[#727272]"
+          )}
+        >
+          <button
+            type="button"
+            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center"
+            aria-label="语音改写"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              voiceStartYRef.current = event.clientY;
+              setVoiceState("recording");
+            }}
+            onPointerMove={(event) => {
+              if (voiceStartYRef.current === null) return;
+              setVoiceState(voiceStartYRef.current - event.clientY > 50 ? "cancel" : "recording");
+            }}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              const cancelled = voiceState === "cancel";
+              voiceStartYRef.current = null;
+              setVoiceState("idle");
+              if (!cancelled) {
+                onChange("周末想找一条轻松拍照路线，最好少走路");
+              }
+            }}
+            onPointerCancel={() => {
+              voiceStartYRef.current = null;
+              setVoiceState("idle");
+            }}
+          >
+            <Mic className="h-[22px] w-[22px]" />
+          </button>
+          <div className="min-w-0 flex-1 text-center text-[14px] font-normal leading-[22px]">
+            {voiceState === "recording" ? "松手改写，上滑取消" : voiceState === "cancel" ? "松手取消" : "按住说话"}
+          </div>
+          <button
+            onClick={onSubmit}
+            className="flex h-[35px] w-[35px] shrink-0 items-center justify-center rounded-full bg-[#ff6430] bg-contain bg-center bg-no-repeat text-white"
+            style={{ backgroundImage: "url('/dianping-assets/submit.png')" }}
+            aria-label="发送编辑内容"
+          />
+        </div>
+      </div>
+      <div className="absolute bottom-0 left-0 right-0 z-10">
         <MockKeyboard onAction={onSubmit} />
       </div>
     </motion.div>
@@ -2673,35 +2939,63 @@ function HighlightedWord({ children, delay }: { children: ReactNode; delay: numb
   );
 }
 
-function HighlightableText({
-  active,
-  children,
-  className,
-  as: Tag = "span"
-}: {
-  active: boolean;
-  children: ReactNode;
-  className?: string;
-  as?: "span" | "p";
-}) {
+function ShimmerSubtitle({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <Tag className={cn("relative block overflow-hidden rounded-[5px]", className)}>
-      {active && (
+    <div className={cn("inline-flex max-w-full items-center overflow-hidden text-[#999999]", className)}>
+      <span className="relative">
+        {children}
         <motion.span
           aria-hidden="true"
-          className="absolute inset-y-[-4px] -left-[55%] z-0 w-[55%] skew-x-[-18deg] bg-gradient-to-r from-transparent via-[#dfe6ff] to-transparent"
-          animate={{ x: ["0%", "260%"], opacity: [0, 0.9, 0] }}
-          transition={{ duration: 0.85, ease: "easeInOut" }}
+          className="absolute inset-y-0 -left-14 w-14 skew-x-[-18deg] bg-gradient-to-r from-transparent via-white/85 to-transparent"
+          animate={{ x: [0, 300] }}
+          transition={{ repeat: Infinity, duration: 1.35, ease: "easeInOut" }}
         />
-      )}
-      <motion.span
-        className="relative z-10"
-        animate={active ? { color: ["#20283a", "#6678d8", "#20283a"] } : {}}
-        transition={{ duration: 0.85, ease: "easeInOut" }}
+      </span>
+    </div>
+  );
+}
+
+function MobileThinkingBlock({
+  title,
+  subtitle,
+  autoFocus = false,
+  promptAnchor = false,
+  onTitleClick
+}: {
+  title: ReactNode;
+  subtitle: ReactNode;
+  autoFocus?: boolean;
+  promptAnchor?: boolean;
+  onTitleClick?: () => void;
+}) {
+  const content = (
+    <>
+      <h2 className="text-[24px] font-semibold leading-[34px] tracking-normal text-black">{title}</h2>
+      <ShimmerSubtitle className="mt-1 text-[20px] font-normal leading-[28px]">{subtitle}</ShimmerSubtitle>
+    </>
+  );
+
+  return (
+    <section
+      data-flow-block
+      data-prompt-anchor={promptAnchor ? "true" : undefined}
+      data-flow-autofocus={autoFocus ? "true" : undefined}
+      className={cn(FLOW_BLOCK_CLASS, "relative flex flex-col justify-center overflow-hidden px-[26px] pb-[180px]")}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
       >
-        {children}
-      </motion.span>
-    </Tag>
+        {onTitleClick ? (
+          <button type="button" onClick={onTitleClick} className="block w-full text-left">
+            {content}
+          </button>
+        ) : (
+          content
+        )}
+      </motion.div>
+    </section>
   );
 }
 
@@ -2733,6 +3027,7 @@ function PlanningConversationView({
   expandedStopId,
   completedTodoIds,
   onEditPrompt,
+  durationMs,
   onAgentStepClick,
   setClarification,
   setCardAnswers,
@@ -2775,6 +3070,7 @@ function PlanningConversationView({
   expandedStopId?: string;
   completedTodoIds: string[];
   onEditPrompt: () => void;
+  durationMs?: number;
   onAgentStepClick?: (agentName: string) => void;
   setClarification: (state: ClarificationState) => void;
   setCardAnswers: (state: ClarificationCardAnswers) => void;
@@ -2816,6 +3112,7 @@ function PlanningConversationView({
         status={agentIsRunning ? "running" : "completed"}
         showAgentChain={agentIsRunning ? runningAgentChainVisible : true}
         autoFocus={view === "running" && !hasConfirmedClarification && !hasConfirmedSummary}
+        durationMs={durationMs}
         onEditPrompt={onEditPrompt}
         onAgentStepClick={onAgentStepClick}
       />
@@ -2854,15 +3151,12 @@ function PlanningConversationView({
           clarification={hasConfirmedClarification ? confirmedClarification : clarification}
           requirementSummary={requirementSummary}
           autoFocus={view === "summary"}
-          confirmed={hasConfirmedSummary || view === "plans" || view === "refining" || view === "selected"}
+          confirmed={hasConfirmedSummary}
           onConfirm={onConfirmSummary}
         />
       )}
 
       {showPlanGeneration && <PlanGenerationThinkingView autoFocus />}
-
-      {/* Skeleton placeholder while plans are generating */}
-      {showPlanGeneration && <PlanSkeleton />}
 
       {showPlans && selectedPlan && (
         <PlansView
@@ -2902,13 +3196,9 @@ function PlanningConversationView({
 function RunningView({
   prompt,
   apiNotice,
-  steps,
-  activeAgentStep,
   status = "running",
-  showAgentChain,
   autoFocus = false,
-  onEditPrompt,
-  onAgentStepClick
+  onEditPrompt
 }: {
   prompt: string;
   apiNotice: string;
@@ -2917,25 +3207,11 @@ function RunningView({
   status?: "running" | "completed";
   showAgentChain: boolean;
   autoFocus?: boolean;
+  durationMs?: number;
   onEditPrompt: () => void;
   onAgentStepClick?: (agentName: string) => void;
 }) {
   const [typedPrompt, setTypedPrompt] = useState("");
-  const agentBlockRef = useRef<HTMLElement | null>(null);
-
-  // 根据 activeAgentStep 计算当前步骤索引，不再使用 setInterval 假动画
-  const activeStep = useMemo(() => {
-    if (status === "completed") {
-      return Math.max(steps.length - 1, 0);
-    }
-    if (!activeAgentStep) {
-      return -1;
-    }
-    const index = steps.findIndex((s) => s.agent === activeAgentStep);
-    return Math.max(index, 0);
-  }, [activeAgentStep, status, steps]);
-
-  const currentStep = steps[Math.min(activeStep, steps.length - 1)] ?? steps[0];
 
   // 打字机效果保留，与 Agent 进度无关
   useEffect(() => {
@@ -2961,52 +3237,6 @@ function RunningView({
     };
   }, [prompt, status]);
 
-  useEffect(() => {
-    if (!showAgentChain || !autoFocus) {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      const block = agentBlockRef.current;
-      const target = block?.closest<HTMLElement>("[data-mobile-flow='true']");
-      if (target && block) {
-        scrollFlowBlockIntoView(target, block);
-      }
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [autoFocus, showAgentChain]);
-
-  // Agent 步骤变化时，自动滚动到当前步骤
-  useEffect(() => {
-    if (!showAgentChain || status === "completed") {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      const block = agentBlockRef.current;
-      const target = block?.closest<HTMLElement>("[data-mobile-flow='true']");
-      if (!target || !block) {
-        return;
-      }
-      // 找到当前步骤的 DOM 元素
-      const stepElements = block.querySelectorAll<HTMLElement>("[data-agent-step]");
-      const currentStepEl = stepElements[activeStep];
-      if (currentStepEl) {
-        // 滚动到当前步骤，让它出现在视口中间偏下
-        const targetRect = target.getBoundingClientRect();
-        const stepRect = currentStepEl.getBoundingClientRect();
-        const offset = Math.round(targetRect.height * 0.45);
-        const top = Math.max(0, target.scrollTop + stepRect.top - targetRect.top - offset);
-        target.scrollTo({ top, behavior: "smooth" });
-      }
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeStep, showAgentChain, status]);
-
-  const visibleSteps = status === "completed" ? steps : steps.slice(0, Math.min(activeStep + 1, steps.length));
-
   return (
     <motion.section
       key="running"
@@ -3016,151 +3246,71 @@ function RunningView({
       transition={{ duration: 0.35 }}
       className="space-y-4 pb-8"
     >
-      <section
-        data-flow-block
-        data-prompt-anchor
-        data-flow-autofocus={autoFocus && !showAgentChain ? "true" : undefined}
-        className={cn(FLOW_BLOCK_CLASS, "relative flex flex-col justify-center overflow-hidden px-[26px] pb-[200px]")}
-      >
-        <motion.div
-          key="prompt-typing"
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <button
-            type="button"
-            onClick={onEditPrompt}
-            className="block w-full text-left text-[28px] font-black leading-[43px] tracking-normal text-black"
-          >
-            {typedPrompt || prompt.slice(0, 1)}
-            {status === "running" && !showAgentChain && (
-              <motion.span
-                aria-hidden="true"
-                className="ml-0.5 inline-block h-8 w-[2px] translate-y-1 bg-black"
-                animate={{ opacity: [1, 0, 1] }}
-                transition={{ repeat: Infinity, duration: 0.85 }}
-              />
-            )}
-          </button>
-          <div className="mt-5 inline-flex h-8 items-center overflow-hidden text-[24px] font-normal leading-8 text-[#999999]">
-            <span className="relative">
-              {showAgentChain ? "已获取基本信息" : apiNotice || "正在获取基本信息"}
-              {!showAgentChain && (
-                <motion.span
-                  aria-hidden="true"
-                  className="absolute inset-y-0 -left-12 w-12 skew-x-[-18deg] bg-gradient-to-r from-transparent via-white/80 to-transparent"
-                  animate={{ x: [0, 260] }}
-                  transition={{ repeat: Infinity, duration: 1.25, ease: "easeInOut" }}
-                />
-              )}
-            </span>
-          </div>
-        </motion.div>
-      </section>
-
-      <AnimatePresence initial={false}>
-        {showAgentChain && (
-          <section
-            ref={agentBlockRef}
-            data-flow-block
-            data-flow-autofocus={autoFocus ? "true" : undefined}
-            className={cn(FLOW_BLOCK_CLASS, "relative overflow-hidden px-[26px] pt-[84px] pb-[300px]")}
-          >
-            <motion.div
-              key="agent-chain"
-              initial={{ opacity: 0, y: 34 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -18 }}
-              transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full"
-            >
-              <div>
-                <h2 className="text-[24px] font-semibold leading-[34px] text-black">正在规划中</h2>
-                <div className="mt-1 inline-flex h-5 items-center overflow-hidden text-[14px] leading-5 text-[#999999]">
-                  <span className="relative">
-                    {activeAgentStep ? "稍等一下，我正在思考哦" : "正在调用后端…"}
-                    <motion.span
-                      aria-hidden="true"
-                      className="absolute inset-y-0 -left-10 w-10 skew-x-[-18deg] bg-gradient-to-r from-transparent via-white/75 to-transparent"
-                      animate={{ x: [0, 190] }}
-                      transition={{ repeat: Infinity, duration: 1.35, ease: "easeInOut" }}
-                    />
-                  </span>
-                </div>
-              </div>
-
-              <div className="mt-[42px] space-y-4">
-                <AnimatePresence initial={false}>
-                  {visibleSteps.map((step, index) => {
-                    const completed = status === "completed" || index < activeStep;
-                    const current = status !== "completed" && index === activeStep;
-
-                    return (
-                      <motion.div
-                        key={step.id}
-                        data-agent-step={index}
-                        initial={{ opacity: 0, y: 12, filter: "blur(5px)" }}
-                        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-                        className="grid cursor-pointer grid-cols-[22px_1fr] gap-3"
-                        onClick={() => onAgentStepClick?.(step.agent)}
-                      >
-                        <div className="flex flex-col items-center pt-1">
-                          <span
-                            className={cn(
-                              "flex h-[18px] w-[18px] items-center justify-center rounded-full border text-[10px] font-black",
-                              completed && "border-[#4f68ff] bg-[#4f68ff] text-white",
-                              current && "border-[#4f68ff] bg-white text-[#4f68ff] shadow-[0_0_0_6px_rgba(79,104,255,0.1)]",
-                              !completed && !current && "border-[#e5e7ee] bg-white text-[#a1a7b2]"
-                            )}
-                          >
-                            {completed ? <Check className="h-3 w-3" /> : index + 1}
-                          </span>
-                          {index < visibleSteps.length - 1 && <span className="mt-1 h-8 w-px bg-[#e8ebf2]" />}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[18px] font-semibold leading-[25px] text-black">{step.label}</span>
-                            {current && (
-                              <motion.span
-                                className="h-1.5 w-1.5 rounded-full bg-[#4f68ff]"
-                                animate={{ scale: [1, 1.65, 1], opacity: [0.45, 1, 0.45] }}
-                                transition={{ repeat: Infinity, duration: 0.9 }}
-                              />
-                            )}
-                          </div>
-                          <p className="mt-1 text-[14px] font-normal leading-5 text-[#999999]">{agentUserFacingDetail(step, index)}</p>
-                          {current && (
-                            <p className="mt-0.5 text-[13px] leading-5 text-[#a7a7a7]">{currentStep.detail}</p>
-                          )}
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                </AnimatePresence>
-              </div>
-
-              <p className="mt-8 text-[12px] leading-5 text-[#a0a0a0]">{apiNotice}</p>
-            </motion.div>
-          </section>
-        )}
-      </AnimatePresence>
+      <MobileThinkingBlock
+        title={typedPrompt || prompt.slice(0, 1)}
+        subtitle={status === "running" ? apiNotice || "稍等一下，我正在思考哦" : "已获取基本信息"}
+        autoFocus={autoFocus}
+        promptAnchor
+        onTitleClick={onEditPrompt}
+      />
     </motion.section>
   );
 }
 
 function DirectAnswerView({ answer, apiNotice, onConvertToPlan }: { answer: DirectAnswer | undefined; apiNotice: string; onConvertToPlan: () => void }) {
+  const [typedAnswer, setTypedAnswer] = useState("");
+  const [showPoiSection, setShowPoiSection] = useState(false);
+
+  // 流式打字机效果：answer 变化时逐字显示
+  useEffect(() => {
+    if (!answer?.answer) {
+      setTypedAnswer("");
+      return;
+    }
+
+    // 如果 answer 已经完整且和 typedAnswer 相同，跳过
+    if (answer.answer === typedAnswer) {
+      return;
+    }
+
+    const characters = Array.from(answer.answer);
+    let charIndex = 0;
+    setTypedAnswer("");
+
+    const timer = window.setInterval(() => {
+      charIndex += 1;
+      setTypedAnswer(characters.slice(0, charIndex).join(""));
+      if (charIndex >= characters.length) {
+        window.clearInterval(timer);
+      }
+    }, Math.max(20, Math.min(40, 600 / Math.max(characters.length, 1))));
+
+    return () => { window.clearInterval(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在 answer.answer 变化时触发
+  }, [answer?.answer]);
+
+  // answer 打完后显示 POI 区域
+  useEffect(() => {
+    if (!answer?.answer || !answer.poiHints.length) {
+      setShowPoiSection(false);
+      return;
+    }
+    if (typedAnswer.length >= answer.answer.length) {
+      const timer = window.setTimeout(() => setShowPoiSection(true), 200);
+      return () => window.clearTimeout(timer);
+    }
+  }, [typedAnswer, answer?.answer, answer?.poiHints.length]);
+
   if (!answer) {
     return null;
   }
 
   const isFallback = answer.fallback_used === true;
-
   const hasMockedFields = (poi: PoiHint) =>
     poi.source === "mock" ||
     (poi.reliability && Object.values(poi.reliability).some((v) => v === "mocked"));
+
+  const isTyping = answer.answer && typedAnswer.length < answer.answer.length;
 
   return (
     <motion.section
@@ -3180,12 +3330,38 @@ function DirectAnswerView({ answer, apiNotice, onConvertToPlan }: { answer: Dire
         </section>
       )}
 
+      {/* 用户问题 */}
       <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}>
-        <p className="text-xs font-semibold text-neutral-500">你的问题</p>
-        <h2 className="mt-3 text-2xl font-black leading-9 text-[#20283a]">{answer.question}</h2>
-        <p className="mt-4 text-xs leading-6 text-neutral-500">已识别为快速问答，不进入完整路线规划。</p>
+        <h2 className="text-2xl font-black leading-9 text-[#20283a]">{answer.question}</h2>
       </section>
 
+      {/* Agent ToolUse 摘要行 */}
+      {answer.agentSteps && answer.agentSteps.length > 0 && (
+        <section data-flow-block className={cn(FLOW_BLOCK_CLASS)}>
+          <div className="space-y-2">
+            {answer.agentSteps.map((step) => (
+              <div key={step.id} className="flex items-center gap-2 text-xs">
+                {step.status === "running" ? (
+                  <svg className="h-3.5 w-3.5 shrink-0 animate-spin text-[#4f68ff]" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                )}
+                <span className={cn("font-semibold", step.status === "running" ? "text-[#4f68ff]" : "text-neutral-500")}>
+                  {step.label}
+                </span>
+                {step.detail && step.status === "completed" && (
+                  <span className="text-neutral-400">· {step.detail}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* LLM 回答卡片 */}
       <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}>
         <div className={cn("rounded-3xl bg-white p-5 shadow-sm", isFallback && "border-2 border-amber-400")}>
           <div className="mb-3 flex items-center gap-2 text-sm font-black">
@@ -3197,87 +3373,88 @@ function DirectAnswerView({ answer, apiNotice, onConvertToPlan }: { answer: Dire
               </span>
             )}
           </div>
-          <p className="text-sm font-semibold leading-7 text-[#20283a]">{answer.answer}</p>
-          <p className="mt-4 rounded-2xl bg-[#eef1ff] px-3 py-3 text-xs leading-5 text-[#5260c8]">{apiNotice}</p>
+          <p className="text-sm font-semibold leading-7 text-[#20283a]">
+            {typedAnswer}
+            {isTyping && <span className="inline-block w-[2px] animate-pulse bg-[#20283a]">&nbsp;</span>}
+          </p>
+          {!isTyping && apiNotice && (
+            <p className="mt-4 rounded-2xl bg-[#eef1ff] px-3 py-3 text-xs leading-5 text-[#5260c8]">{apiNotice}</p>
+          )}
         </div>
       </section>
 
-      <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "py-4")}>
-        <BlockTitle title="附近可参考 POI" subtitle="快速问答也会检索附近地点，帮助答案落地。" />
-        <div className="space-y-3">
-          {answer.poiHints.length ? answer.poiHints.map((poi) => {
-            const isMocked = hasMockedFields(poi);
-            const isAmap = poi.source === "amap";
-            return (
-              <div
-                key={poi.id || poi.name}
-                className={cn(
-                  "rounded-2xl bg-white p-4 shadow-sm",
-                  isMocked && "bg-amber-50/40"
-                )}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-black">{poi.name}</h3>
-                      {isAmap && (
-                        <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-600">
-                          高德数据
-                        </span>
-                      )}
-                      {isMocked && (
-                        <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-600">
-                          模拟数据
-                        </span>
+      {/* POI 卡片区域：打字完成后淡入 */}
+      {showPoiSection && answer.poiHints.length > 0 && (
+        <motion.section
+          data-flow-block
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className={cn(FLOW_BLOCK_CLASS, "py-2")}
+        >
+          <BlockTitle title="附近可参考 POI" subtitle="快速问答也会检索附近地点，帮助答案落地。" />
+          <div className="space-y-3">
+            {answer.poiHints.map((poi) => {
+              const isMocked = hasMockedFields(poi);
+              const isAmap = poi.source === "amap";
+              return (
+                <div
+                  key={poi.id || poi.name}
+                  className={cn(
+                    "rounded-2xl bg-white p-4 shadow-sm",
+                    isMocked && "bg-amber-50/40"
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-black">{poi.name}</h3>
+                        {isAmap && (
+                          <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-600">
+                            高德数据
+                          </span>
+                        )}
+                        {isMocked && (
+                          <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-600">
+                            模拟数据
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs font-semibold text-dz-orange">{poi.meta}</p>
+                      {poi.address && (
+                        <p className="mt-1 text-xs leading-4 text-neutral-400">{poi.address}</p>
                       )}
                     </div>
-                    <p className="mt-1 text-xs font-semibold text-dz-orange">{poi.meta}</p>
-                    {poi.address && (
-                      <p className="mt-1 text-xs leading-4 text-neutral-400">{poi.address}</p>
-                    )}
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">附近</span>
+                      {poi.rating > 0 && (
+                        <span className="text-[11px] font-bold text-amber-500">{poi.rating} 分</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span className="rounded-full bg-dz-soft px-2 py-1 text-[11px] font-bold text-dz-orange">附近</span>
-                    {poi.rating > 0 && (
-                      <span className="text-[11px] font-bold text-amber-500">{poi.rating} 分</span>
-                    )}
-                  </div>
+
+                  {poi.recommendedDishes && poi.recommendedDishes.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {poi.recommendedDishes.map((dish) => (
+                        <span key={dish} className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-600">
+                          {dish}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {poi.openHours && (
+                    <p className="mt-2 text-[11px] leading-4 text-neutral-400">
+                      营业时间：{poi.openHours}
+                    </p>
+                  )}
+
+                  <p className="mt-3 text-xs leading-5 text-neutral-600">{poi.reason}</p>
                 </div>
+              );
+            })}
+          </div>
 
-                {/* 推荐菜 */}
-                {poi.recommendedDishes && poi.recommendedDishes.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {poi.recommendedDishes.map((dish) => (
-                      <span key={dish} className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-600">
-                        {dish}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* 营业时间 */}
-                {poi.openHours && (
-                  <p className="mt-2 text-[11px] leading-4 text-neutral-400">
-                    营业时间：{poi.openHours}
-                  </p>
-                )}
-
-                <p className="mt-3 text-xs leading-5 text-neutral-600">{poi.reason}</p>
-              </div>
-            );
-          }) : (
-            <div className="flex items-center gap-2 rounded-2xl bg-white p-4 text-xs leading-5 text-neutral-500 shadow-sm">
-              <svg className="h-4 w-4 animate-spin text-neutral-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              正在检索相关地点
-            </div>
-          )}
-        </div>
-
-        {/* 转为路线规划入口 */}
-        {answer.poiHints.length > 0 && (
           <button
             type="button"
             onClick={onConvertToPlan}
@@ -3285,8 +3462,21 @@ function DirectAnswerView({ answer, apiNotice, onConvertToPlan }: { answer: Dire
           >
             转为路线规划
           </button>
-        )}
-      </section>
+        </motion.section>
+      )}
+
+      {/* POI 加载中 */}
+      {!showPoiSection && answer.answer && typedAnswer.length >= answer.answer.length && !answer.poiHints.length && (
+        <section data-flow-block className={cn(FLOW_BLOCK_CLASS)}>
+          <div className="flex items-center gap-2 rounded-2xl bg-white p-4 text-xs leading-5 text-neutral-500 shadow-sm">
+            <svg className="h-4 w-4 animate-spin text-neutral-400" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            正在检索相关地点
+          </div>
+        </section>
+      )}
     </motion.section>
   );
 }
@@ -3311,14 +3501,19 @@ function ClarificationRecapView({
       ];
 
   return (
-    <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "py-2")}>
-      <BlockTitle title="已补全的信息" subtitle="这些回答会继续影响后面的候选 POI、距离和排序。" />
-      <div className="rounded-2xl bg-white p-4 shadow-sm">
-        <div className="space-y-3">
+    <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "px-[18px] py-2")}>
+      <div className="mb-7 pt-[42px]">
+        <h2 className="text-[24px] font-semibold leading-[34px] text-black">已补全的信息</h2>
+        <p className="mt-1 text-[16px] font-normal leading-[22px] text-[#999999]">
+          这些回答会继续影响后面的候选地点和排序
+        </p>
+      </div>
+      <div className="rounded-[20px] bg-[#f8f8f8] px-4 py-4">
+        <div className="space-y-2">
           {items.map(([label, value]) => (
-            <div key={label} className="rounded-2xl bg-[#f7f8fa] px-3 py-3">
-              <div className="text-xs font-black leading-5 text-[#7a8190]">{label}</div>
-              <div className="mt-1 text-sm font-semibold leading-6 text-[#20283a]">{value}</div>
+            <div key={label} className="flex min-h-[38px] items-center justify-between gap-4 rounded-[10px] bg-white px-3">
+              <div className="shrink-0 text-[13px] font-normal leading-5 text-[#999999]">{label}</div>
+              <div className="min-w-0 text-right text-[14px] font-normal leading-5 text-[#303030]">{value}</div>
             </div>
           ))}
         </div>
@@ -3348,69 +3543,20 @@ function PostClarificationThinkingView({
       detail: "我会保留 3 套差异明显的方案，并把每套方案为什么被推荐写清楚。"
     }
   ];
+  const block = blocks[Math.min(Math.max(activeStep, 0), blocks.length - 1)];
 
   return (
-    <>
-      {blocks.map((block, index) => (
-        <section
-          key={block.title}
-          data-flow-block
-          data-flow-autofocus={autoFocus && activeStep === index ? "true" : undefined}
-          className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}
-        >
-          <motion.div
-            animate={
-              activeStep === index
-                ? {
-                    scale: [1, 1.035, 1],
-                    boxShadow: [
-                      "0 0 0 0 rgba(242,107,67,0.16)",
-                      "0 0 0 14px rgba(242,107,67,0)",
-                      "0 0 0 0 rgba(242,107,67,0.16)"
-                    ]
-                  }
-                : { scale: 1 }
-            }
-            transition={{ repeat: activeStep === index ? Infinity : 0, duration: 1.35 }}
-            className={cn(
-              "rounded-[28px] border px-5 py-6",
-              index <= activeStep ? "border-[#ffe0d4] bg-[#fff8f4]" : "border-[#edf0f6] bg-white"
-            )}
-          >
-            <div className="mb-3 flex items-center gap-2 text-xs font-black text-dz-orange">
-              {index < activeStep ? <Check className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
-              Agent 继续思考
-            </div>
-            <h3 className="text-xl font-black leading-7 text-[#20283a]">{block.title}</h3>
-            <p className="mt-3 text-sm font-semibold leading-7 text-[#66708a]">{block.detail}</p>
-          </motion.div>
-        </section>
-      ))}
-    </>
+    <MobileThinkingBlock title={block.title} subtitle={block.detail} autoFocus={autoFocus} />
   );
 }
 
 function PlanGenerationThinkingView({ autoFocus = false }: { autoFocus?: boolean }) {
   return (
-    <section
-      data-flow-block
-      data-flow-autofocus={autoFocus ? "true" : undefined}
-      className={cn(FLOW_BLOCK_CLASS, "flex flex-col justify-center")}
-    >
-      <motion.div
-        animate={{ scale: [1, 1.04, 1] }}
-        transition={{ repeat: Infinity, duration: 1.4 }}
-        className="rounded-[28px] border border-[#dbe3ff] bg-[#f3f6ff] px-5 py-6 text-center"
-      >
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-white text-[#4f68ff] shadow-sm">
-          <Sparkles className="h-7 w-7" />
-        </div>
-        <div className="text-base font-black text-[#20283a]">正在生成 3 套方案</div>
-        <p className="mt-2 text-xs font-semibold leading-5 text-[#66708a]">
-          每套方案会保留不同取舍：主推、轻松、拍照或预算友好，并给出可解释排序理由。
-        </p>
-      </motion.div>
-    </section>
+    <MobileThinkingBlock
+      title="正在生成 3 套方案"
+      subtitle="我会保留不同取舍，并把为什么推荐写清楚"
+      autoFocus={autoFocus}
+    />
   );
 }
 
@@ -3439,92 +3585,50 @@ function ClarifyingView({
     setClarification(applyClarificationCardAnswer(clarification, card, nextAnswers[card.id]));
   }
 
-  if (cards.length) {
-    return (
-      <motion.section
-        key="clarifying"
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0 }}
-        className="space-y-4"
-      >
-        {cards.map((card, index) => (
-          <section
-            key={card.id}
-            data-flow-block
-            data-flow-autofocus={autoFocus && index === 0 ? "true" : undefined}
-            className={cn(FLOW_BLOCK_CLASS, "py-2")}
-          >
-            <BlockTitle
-              title={index === 0 ? "补全几个关键信息" : "再确认一个偏好"}
-              subtitle={`${card.field} · ${card.blocks_planning ? "继续规划前必须确认" : "可跳过的偏好优化"}`}
-            />
-            {index === 0 && inputNotice && (
-              <div className="mb-3 rounded-2xl border border-[#dce8ff] bg-[#eef6ff] px-3 py-3 text-xs font-semibold leading-5 text-[#1f3b63]">
-                {inputNotice}
-              </div>
-            )}
-            <section className="rounded-2xl bg-white p-4 shadow-sm">
-              <div className="rounded-2xl bg-[#f3f6ff] px-3 py-3">
-                <h3 className="text-base font-black text-[#20283a]">{card.question}</h3>
-                <p className="mt-2 text-xs font-semibold leading-5 text-[#5260c8]">{card.reason}</p>
-              </div>
-              {isPeopleClarificationCard(card) ? (
-                <PeopleWheelControl value={clarification.people} onChange={(people) => updateCardAnswer(card, `${people} 人`)} />
-              ) : isTimeClarificationCard(card) ? (
-                <TimeWindowControl
-                  value={clarification.timeRange}
-                  options={card.options}
-                  onChange={(timeRange) => updateCardAnswer(card, timeRange)}
-                />
-              ) : card.selection_mode === "free_text" || !card.options.length ? (
-                <textarea
-                  value={String(cardAnswers[card.id] ?? "")}
-                  onChange={(event) => {
-                    updateCardAnswer(card, event.target.value);
-                  }}
-                  rows={3}
-                  placeholder={card.default_value ?? "直接写你的偏好，比如：想少走路、不要太吵"}
-                  className="mt-4 w-full resize-none rounded-2xl border border-dz-line bg-white px-3 py-3 text-sm font-semibold outline-none focus:border-dz-orange"
-                />
-              ) : (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {card.options.map((option) => {
-                    const selected = isClarificationOptionSelected(clarification, cardAnswers, card, option);
-                    return (
-                      <button
-                        key={option}
-                        onClick={() => {
-                          const nextAnswers = updateClarificationCardAnswers(cardAnswers, card, option);
-                          setCardAnswers(nextAnswers);
-                          setClarification(applyClarificationCardAnswer(clarification, card, nextAnswers[card.id]));
-                        }}
-                        className={cn(
-                          "rounded-full border px-3 py-2 text-xs font-semibold",
-                          selected ? "border-dz-orange bg-dz-soft text-dz-orange" : "border-dz-line bg-white text-neutral-600"
-                        )}
-                      >
-                        {card.selection_mode === "multiple" && selected ? "✓ " : ""}
-                        {option}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {card.allow_skip && (
-                <p className="mt-3 text-[11px] font-semibold text-neutral-400">也可以先用默认值继续，后面还能在方案页微调。</p>
-              )}
-            </section>
-            {index === cards.length - 1 && (
-              <button onClick={onConfirm} className="mt-4 w-full rounded-2xl bg-dz-ink px-4 py-4 text-sm font-bold text-white">
-                确定，看看总结
-              </button>
-            )}
-          </section>
-        ))}
-      </motion.section>
-    );
-  }
+  const visibleCards = cards.length
+    ? cards
+    : ([
+        {
+          id: "local-people",
+          type: "clarification_card",
+          question: "几个人出行？",
+          field: "people",
+          selection_mode: "single",
+          ui_component: "number_picker",
+          options: ["1 人", "2 人", "3-4 人", "5 人以上", "其他"],
+          blocks_planning: true,
+          required: true,
+          allow_skip: false,
+          reason: "人数会影响餐厅订位和路线节奏。"
+        },
+        {
+          id: "local-time",
+          type: "clarification_card",
+          question: "时段",
+          field: "time_window",
+          selection_mode: "single",
+          ui_component: "time_range_picker",
+          options: ["上午", "下午", "晚上", "随便"],
+          blocks_planning: true,
+          required: true,
+          allow_skip: false,
+          reason: "时间窗会影响营业状态和停留时长。"
+        },
+        {
+          id: "local-food",
+          type: "clarification_card",
+          question: "想吃哪些菜系（可多选）",
+          field: "food",
+          selection_mode: "multiple",
+          ui_component: "choice_buttons",
+          options: ["川湘风味中餐（偏香辣）", "粤式/江浙风味中餐（清淡鲜爽）", "韩式/日式料理", "西式餐品", "随便"],
+          default_value: "随便",
+          blocks_planning: true,
+          required: true,
+          allow_skip: false,
+          reason: "饮食偏好会影响候选 POI。"
+        }
+      ] satisfies ClarificationCard[]);
 
   return (
     <motion.section
@@ -3537,111 +3641,248 @@ function ClarifyingView({
       <section
         data-flow-block
         data-flow-autofocus={autoFocus ? "true" : undefined}
-        className={cn(FLOW_BLOCK_CLASS, "py-2")}
+        className={cn(FLOW_BLOCK_CLASS, "px-[18px] py-2")}
       >
-        <BlockTitle title="补全几个关键信息" subtitle="这些会影响路线节奏和 POI 筛选。" />
+        <div className="mb-7 pt-[42px]">
+          <h2 className="text-[24px] font-semibold leading-[34px] text-black">确认关键信息</h2>
+          <p className="mt-1 text-[16px] font-normal leading-[22px] text-[#999999]">
+            需要明确几个必要信息，更好帮你规划
+          </p>
+        </div>
         {inputNotice && (
-          <div className="mb-3 rounded-2xl border border-[#dce8ff] bg-[#eef6ff] px-3 py-3 text-xs font-semibold leading-5 text-[#1f3b63]">
+          <div className="mb-4 rounded-[14px] bg-[#f7f7f7] px-4 py-3 text-[12px] font-normal leading-5 text-[#777777]">
             {inputNotice}
           </div>
         )}
-        <section className="rounded-2xl bg-white p-4 shadow-sm">
-          <PeopleWheelControl
-            value={clarification.people}
-            onChange={(people) => setClarification({ ...clarification, people })}
-          />
-          <TimeWindowControl
-            value={clarification.timeRange}
-            options={["今天下午 14:00-18:00", "今晚 18:00-21:30", "周末半天", "随便"]}
-            onChange={(timeRange) => setClarification({ ...clarification, timeRange })}
-          />
-          <ChoiceGroup
-            label="饮食"
-            value={clarification.food}
-            options={["吃正餐 + 甜品", "只喝饮品", "吃当地特色小吃", "不吃任何东西"]}
-            onChange={(food) => setClarification({ ...clarification, food })}
-          />
-        </section>
-      </section>
-
-      <section data-flow-block className={cn(FLOW_BLOCK_CLASS, "py-2")}>
-        <BlockTitle title="再确认一个偏好" subtitle="ContextGroundingAgent 在候选餐厅里发现川菜和火锅，所以先问清楚口味和预算。" />
-        <section className="rounded-2xl bg-white p-4 shadow-sm">
-          <div className="mb-3 rounded-2xl bg-[#f3f6ff] px-3 py-3 text-xs font-semibold leading-5 text-[#5260c8]">
-            你能接受辣味吗？我会用这个答案调整餐厅排序，避免推荐看起来好但实际不适合的店。
-          </div>
-          <ChoiceGroup
-            label="预算"
-            value={clarification.budget}
-            options={["人均 ¥50-100", "人均 ¥100-200", "人均 ¥200-300", "不计预算"]}
-            onChange={(budget) => setClarification({ ...clarification, budget })}
-          />
-          <ChoiceGroup
-            label="口味"
-            value={clarification.taste}
-            options={["一点辣都不行", "微辣可以", "无辣不欢", "随便"]}
-            onChange={(taste) => setClarification({ ...clarification, taste })}
-          />
-        </section>
-        <button onClick={onConfirm} className="w-full rounded-2xl bg-dz-ink px-4 py-4 text-sm font-bold text-white">
-          确定，看看总结
+        <div className="space-y-5">
+          {visibleCards.filter(isPeopleClarificationCard).slice(0, 2).map((card) => (
+            <QuestionCard key={card.id} compact>
+              <PeopleWheelControl
+                title={card.question}
+                value={clarification.people}
+                onChange={(people) => updateCardAnswer(card, `${people} 人`)}
+              />
+            </QuestionCard>
+          ))}
+          {visibleCards.filter((card) => !isPeopleClarificationCard(card)).map((card) => (
+            <ClarificationTemplateCard
+              key={card.id}
+              card={card}
+              clarification={clarification}
+              cardAnswers={cardAnswers}
+              onAnswer={updateCardAnswer}
+              setCardAnswers={setCardAnswers}
+              setClarification={setClarification}
+            />
+          ))}
+        </div>
+        <button
+          onClick={onConfirm}
+          className="mt-6 w-full rounded-full bg-[#ff6430] px-4 py-3.5 text-[15px] font-semibold text-white shadow-[0_8px_20px_rgba(255,100,48,0.24)] active:scale-[0.99]"
+        >
+          确定
         </button>
+        {/* 底部留白：防止确定按钮被输入框遮挡 */}
+        <div className="h-[120px]" />
       </section>
     </motion.section>
   );
 }
 
-function PeopleWheelControl({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  const peopleOptions = Array.from({ length: 20 }, (_, index) => index + 1);
-  const boundedValue = Math.min(20, Math.max(1, value || 1));
+function QuestionCard({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
+  return (
+    <section
+      className={cn(
+        "rounded-[20px] bg-[#f8f8f8] px-4 py-4",
+        compact ? "min-h-[192px]" : "w-full"
+      )}
+    >
+      {children}
+    </section>
+  );
+}
+
+function ClarificationTemplateCard({
+  card,
+  clarification,
+  cardAnswers,
+  onAnswer,
+  setCardAnswers,
+  setClarification
+}: {
+  card: ClarificationCard;
+  clarification: ClarificationState;
+  cardAnswers: ClarificationCardAnswers;
+  onAnswer: (card: ClarificationCard, answer: string | string[]) => void;
+  setCardAnswers: (state: ClarificationCardAnswers) => void;
+  setClarification: (state: ClarificationState) => void;
+}) {
+  if (isTimeClarificationCard(card)) {
+    return (
+      <QuestionCard>
+        <TimeWindowControl
+          value={clarification.timeRange}
+          options={card.options}
+          onChange={(timeRange) => onAnswer(card, timeRange)}
+        />
+      </QuestionCard>
+    );
+  }
+
+  if (card.selection_mode === "free_text" || card.ui_component === "free_text" || !card.options.length) {
+    return (
+      <QuestionCard>
+        <h3 className="border-b border-[#d8d8d8] pb-2 text-[16px] font-semibold leading-[22px] text-[#303030]">
+          {card.question}
+        </h3>
+        <textarea
+          value={String(cardAnswers[card.id] ?? "")}
+          onChange={(event) => onAnswer(card, event.target.value)}
+          rows={3}
+          placeholder={card.default_value ?? "直接写你的偏好"}
+          className="mt-3 w-full resize-none rounded-[12px] border border-[#eeeeee] bg-white px-3 py-3 text-[14px] leading-5 text-[#303030] outline-none focus:border-[#ff6430]"
+        />
+      </QuestionCard>
+    );
+  }
 
   return (
-    <div className="border-t border-dz-line py-3 first:border-t-0">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-sm font-bold">人数</span>
-        <span className="rounded-full bg-dz-soft px-3 py-1 text-xs font-black text-dz-orange">{boundedValue} 人</span>
-      </div>
-      <div className="flex items-center justify-between gap-3 rounded-2xl bg-[#f7f8fa] p-3">
-        <button
-          onClick={() => onChange(Math.max(1, boundedValue - 1))}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-lg font-black text-[#20283a] shadow-sm disabled:text-neutral-300"
-          disabled={boundedValue <= 1}
-        >
-          -
-        </button>
-        <div className="grid h-24 min-w-[120px] flex-1 place-items-center overflow-hidden rounded-2xl bg-white shadow-inner">
-          <span className="text-xs font-semibold text-neutral-300">{boundedValue > 1 ? `${boundedValue - 1} 人` : " "}</span>
-          <div className="flex min-w-[92px] items-baseline justify-center rounded-2xl bg-dz-yellow px-4 py-2 text-dz-ink">
-            <span className="text-3xl font-black">{boundedValue}</span>
-            <span className="ml-1 text-sm font-black">人</span>
-          </div>
-          <span className="text-xs font-semibold text-neutral-300">{boundedValue < 20 ? `${boundedValue + 1} 人` : " "}</span>
+    <ChoiceQuestionControl
+      card={card}
+      clarification={clarification}
+      cardAnswers={cardAnswers}
+      setCardAnswers={setCardAnswers}
+      setClarification={setClarification}
+    />
+  );
+}
+
+function PeopleWheelControl({
+  title = "几个人出行？",
+  value,
+  onChange
+}: {
+  title?: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const boundedValue = Math.min(20, Math.max(1, value || 1));
+  const visibleValues = [boundedValue - 3, boundedValue - 2, boundedValue - 1, boundedValue, boundedValue + 1, boundedValue + 2, boundedValue + 3]
+    .filter((item) => item >= 1 && item <= 20);
+
+  return (
+    <div>
+      <h3 className="border-b border-[#d8d8d8] pb-2 text-[16px] font-semibold leading-[22px] text-[#303030]">{title}</h3>
+      <div className="relative mx-auto mt-3 grid h-[118px] place-items-center overflow-hidden">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-9 bg-gradient-to-b from-[#f8f8f8] to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-9 bg-gradient-to-t from-[#f8f8f8] to-transparent" />
+        <div className="pointer-events-none absolute left-1/2 top-1/2 h-[30px] w-[72px] -translate-x-1/2 -translate-y-1/2 rounded-[7px] bg-[#eeeeee]" />
+        <div className="flex flex-col items-center justify-center gap-1">
+          {visibleValues.map((people) => {
+            const distance = Math.abs(people - boundedValue);
+            return (
+              <button
+                key={people}
+                type="button"
+                onClick={() => onChange(people)}
+                className={cn(
+                  "relative z-10 h-[22px] w-[72px] rounded-[7px] text-center text-[18px] leading-[22px] transition",
+                  distance === 0 && "font-normal text-[#ff6430]",
+                  distance === 1 && "text-[#cfcfcf]",
+                  distance >= 2 && "text-[#e8e8e8]"
+                )}
+              >
+                {people}
+              </button>
+            );
+          })}
         </div>
-        <button
-          onClick={() => onChange(Math.min(20, boundedValue + 1))}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-lg font-black text-[#20283a] shadow-sm disabled:text-neutral-300"
-          disabled={boundedValue >= 20}
-        >
-          +
-        </button>
       </div>
-      <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {peopleOptions.map((people) => (
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {[Math.max(1, boundedValue - 1), Math.min(20, boundedValue + 1)].filter((item, index, array) => array.indexOf(item) === index && item !== boundedValue).map((people) => (
           <button
             key={people}
             onClick={() => onChange(people)}
             className={cn(
-              "h-8 min-w-8 shrink-0 rounded-full px-2 text-xs font-black",
-              boundedValue === people ? "bg-dz-ink text-white" : "bg-dz-soft text-neutral-500"
+              "h-8 rounded-full bg-white text-[12px] font-normal text-[#999999]",
+              boundedValue === 1 || boundedValue === 20 ? "col-span-2" : ""
             )}
           >
-            {people}
+            {people} 人
           </button>
         ))}
       </div>
     </div>
   );
 }
+
+/* ---- iOS 风格时间滚轮列 ---- */
+function TimeWheelColumn({
+  items,
+  selectedIndex,
+  onChange
+}: {
+  items: string[];
+  selectedIndex: number;
+  onChange: (index: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const ITEM_H = 30;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = selectedIndex * ITEM_H;
+  }, [selectedIndex]);
+
+  return (
+    <div className="relative h-[150px] w-[72px] overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[60px] bg-gradient-to-b from-[#f8f8f8] to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[60px] bg-gradient-to-t from-[#f8f8f8] to-transparent" />
+      <div className="pointer-events-none absolute left-0 right-0 top-1/2 z-10 h-[30px] -translate-y-1/2 rounded-[6px] bg-[#eeeeee]" />
+      <div
+        ref={ref}
+        onScroll={() => {
+          const el = ref.current;
+          if (!el) return;
+          const idx = Math.round(el.scrollTop / ITEM_H);
+          if (idx !== selectedIndex && idx >= 0 && idx < items.length) {
+            onChange(idx);
+          }
+        }}
+        className="h-full snap-y snap-mandatory overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{ paddingTop: 60, paddingBottom: 60 }}
+      >
+        {items.map((item, i) => {
+          const dist = Math.abs(i - selectedIndex);
+          return (
+            <div
+              key={item}
+              className="flex h-[30px] snap-start items-center justify-center text-[16px] leading-none transition-colors"
+              style={{ color: dist === 0 ? "#ff6430" : dist === 1 ? "#cfcfcf" : "#e8e8e8" }}
+            >
+              {item}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---- 解析时间字符串中的小时和分钟 ---- */
+function parseTimeHM(timeStr: string): { hour: number; minute: number } {
+  const m = timeStr.match(/(\d{1,2}):(\d{2})/);
+  if (m) return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10) };
+  return { hour: 9, minute: 0 };
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+const HOURS = Array.from({ length: 24 }, (_, i) => pad2(i));
+const MINUTES = Array.from({ length: 12 }, (_, i) => pad2(i * 5));
 
 function TimeWindowControl({
   value,
@@ -3654,21 +3895,37 @@ function TimeWindowControl({
 }) {
   const shortcuts = options.length ? options : ["上午", "下午", "晚上", "随便"];
   const preview = createTimeWindowPreview(value);
+  const [specificEnabled, setSpecificEnabled] = useState(!timeShortcutMatches(value, "随便"));
+
+  const startHM = parseTimeHM(preview.start);
+  const endHM = parseTimeHM(preview.end);
+  const [startHourIdx, setStartHourIdx] = useState(HOURS.indexOf(pad2(startHM.hour)));
+  const [startMinuteIdx, setStartMinuteIdx] = useState(MINUTES.indexOf(pad2(startHM.minute)));
+  const [endHourIdx, setEndHourIdx] = useState(HOURS.indexOf(pad2(endHM.hour)));
+  const [endMinuteIdx, setEndMinuteIdx] = useState(MINUTES.indexOf(pad2(endHM.minute)));
+
+  function buildTimeRange(sh: number, sm: number, eh: number, em: number) {
+    return `今天 ${pad2(sh)}:${pad2(sm)}-${pad2(eh)}:${pad2(em)}`;
+  }
 
   return (
-    <div className="border-t border-dz-line py-3 first:border-t-0">
-      <div className="mb-2 text-sm font-bold">时间</div>
-      <div className="flex flex-wrap gap-2">
+    <div>
+      <h3 className="text-[16px] font-semibold leading-[22px] text-[#303030]">时段</h3>
+      <div className="mt-3 flex gap-2 border-b border-[#d8d8d8] pb-3">
         {shortcuts.map((option) => {
           const optionValue = normalizeTimeOption(option);
           const selected = value === option || value === optionValue || timeShortcutMatches(value, option);
           return (
             <button
+              type="button"
               key={option}
-              onClick={() => onChange(optionValue)}
+              onClick={() => {
+                onChange(optionValue);
+                setSpecificEnabled(!timeShortcutMatches(optionValue, "随便"));
+              }}
               className={cn(
-                "rounded-full border px-3 py-2 text-xs font-semibold",
-                selected ? "border-dz-orange bg-dz-soft text-dz-orange" : "border-dz-line bg-white text-neutral-600"
+                "h-8 rounded-full px-3 text-[14px] font-normal transition",
+                selected ? "bg-[#eeeeee] text-[#ff6430]" : "bg-[#eeeeee] text-[#303030]"
               )}
             >
               {option}
@@ -3676,51 +3933,128 @@ function TimeWindowControl({
           );
         })}
       </div>
-      <div className="mt-3 grid grid-cols-[1fr_28px_1fr] items-center rounded-2xl bg-[#f7f8fa] px-3 py-3">
-        <div className="rounded-2xl bg-white px-3 py-3 text-center shadow-inner">
-          <div className="text-[11px] font-bold text-neutral-400">开始</div>
-          <div className="mt-1 text-lg font-black text-[#20283a]">{preview.start}</div>
-        </div>
-        <ChevronRight className="mx-auto h-4 w-4 text-neutral-300" />
-        <div className="rounded-2xl bg-white px-3 py-3 text-center shadow-inner">
-          <div className="text-[11px] font-bold text-neutral-400">结束</div>
-          <div className="mt-1 text-lg font-black text-[#20283a]">{preview.end}</div>
-        </div>
+      <div className="mt-4 flex items-center justify-between">
+        <span className="text-[14px] font-normal leading-5 text-[#777777]">具体时间</span>
+        <button
+          type="button"
+          aria-pressed={specificEnabled}
+          onClick={() => setSpecificEnabled((enabled) => !enabled)}
+          className={cn(
+            "relative h-6 w-12 rounded-full transition",
+            specificEnabled ? "bg-[#ff6430]" : "bg-[#aaaaaa]"
+          )}
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 h-5 w-5 rounded-full bg-white transition",
+              specificEnabled ? "left-[26px]" : "left-0.5"
+            )}
+          />
+        </button>
       </div>
-      <p className="mt-2 text-[11px] font-semibold leading-5 text-neutral-400">也可以直接输入“15 点到 19 点”，点仔会自动回填。</p>
+      {specificEnabled && (
+        <div className="mt-4 space-y-3">
+          {/* 开始时间 */}
+          <div className="rounded-[14px] bg-white px-3 py-2">
+            <div className="mb-1 text-[12px] font-normal leading-4 text-[#999999]">开始时间</div>
+            <div className="flex items-center justify-center gap-1">
+              <TimeWheelColumn
+                items={HOURS}
+                selectedIndex={startHourIdx}
+                onChange={(idx) => {
+                  setStartHourIdx(idx);
+                  onChange(buildTimeRange(idx, startMinuteIdx, endHourIdx, endMinuteIdx));
+                }}
+              />
+              <span className="text-[18px] font-semibold text-[#303030]">:</span>
+              <TimeWheelColumn
+                items={MINUTES}
+                selectedIndex={startMinuteIdx}
+                onChange={(idx) => {
+                  setStartMinuteIdx(idx);
+                  onChange(buildTimeRange(startHourIdx, idx, endHourIdx, endMinuteIdx));
+                }}
+              />
+            </div>
+          </div>
+          {/* 结束时间 */}
+          <div className="rounded-[14px] bg-white px-3 py-2">
+            <div className="mb-1 text-[12px] font-normal leading-4 text-[#999999]">结束时间</div>
+            <div className="flex items-center justify-center gap-1">
+              <TimeWheelColumn
+                items={HOURS}
+                selectedIndex={endHourIdx}
+                onChange={(idx) => {
+                  setEndHourIdx(idx);
+                  onChange(buildTimeRange(startHourIdx, startMinuteIdx, idx, endMinuteIdx));
+                }}
+              />
+              <span className="text-[18px] font-semibold text-[#303030]">:</span>
+              <TimeWheelColumn
+                items={MINUTES}
+                selectedIndex={endMinuteIdx}
+                onChange={(idx) => {
+                  setEndMinuteIdx(idx);
+                  onChange(buildTimeRange(startHourIdx, startMinuteIdx, endHourIdx, idx));
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ChoiceGroup({
-  label,
-  value,
-  options,
-  onChange
+function ChoiceQuestionControl({
+  card,
+  clarification,
+  cardAnswers,
+  setCardAnswers,
+  setClarification
 }: {
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (value: string) => void;
+  card: ClarificationCard;
+  clarification: ClarificationState;
+  cardAnswers: ClarificationCardAnswers;
+  setCardAnswers: (state: ClarificationCardAnswers) => void;
+  setClarification: (state: ClarificationState) => void;
 }) {
   return (
-    <div className="border-t border-dz-line py-3 first:border-t-0">
-      <div className="mb-2 text-sm font-bold">{label}</div>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <button
-            key={option}
-            onClick={() => onChange(option)}
-            className={cn(
-              "rounded-full border px-3 py-2 text-xs font-semibold",
-              value === option ? "border-dz-orange bg-dz-soft text-dz-orange" : "border-dz-line bg-white text-neutral-600"
-            )}
-          >
-            {option}
-          </button>
-        ))}
+    <QuestionCard>
+      <h3 className="border-b border-[#d8d8d8] pb-2 text-[16px] font-semibold leading-[22px] text-[#303030]">
+        {card.question}
+      </h3>
+      <div className="mt-3 space-y-2">
+        {card.options.map((option) => {
+          const selected = isClarificationOptionSelected(clarification, cardAnswers, card, option);
+          return (
+            <button
+              type="button"
+              key={option}
+              onClick={() => {
+                const nextAnswers = updateClarificationCardAnswers(cardAnswers, card, option);
+                setCardAnswers(nextAnswers);
+                setClarification(applyClarificationCardAnswer(clarification, card, nextAnswers[card.id]));
+              }}
+              className={cn(
+                "flex min-h-[34px] w-full items-center gap-3 rounded-[9px] border bg-white px-3 text-left text-[14px] font-normal leading-5 transition",
+                selected ? "border-[#ff6430] text-[#303030]" : "border-[#eeeeee] text-[#303030]"
+              )}
+            >
+              <span
+                className={cn(
+                  "flex h-[16px] w-[16px] shrink-0 items-center justify-center rounded-[3px] border",
+                  selected ? "border-[#ff6430] bg-[#ff6430]" : "border-[#ff6430] bg-white"
+                )}
+              >
+                {selected && <Check className="h-[12px] w-[12px] text-white" />}
+              </span>
+              <span>{option}</span>
+            </button>
+          );
+        })}
       </div>
-    </div>
+    </QuestionCard>
   );
 }
 
@@ -3760,31 +4094,41 @@ function SummaryView({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
-      className={cn(FLOW_BLOCK_CLASS, "py-2")}
+      className={cn(FLOW_BLOCK_CLASS, "px-[18px] py-2")}
     >
-      <BlockTitle title="确认你的需求" subtitle={requirementSummary?.next_action ?? "确认后开始生成 3 套路线。"} />
-      <div className="rounded-2xl bg-white p-4 shadow-sm">
-        <div className="space-y-3">
+      <div className="mb-7 pt-[42px]">
+        <h2 className="text-[24px] font-semibold leading-[34px] text-black">确认你的需求</h2>
+        <p className="mt-1 text-[16px] font-normal leading-[22px] text-[#999999]">
+          {requirementSummary?.next_action ?? "确认后开始生成 3 套路线"}
+        </p>
+      </div>
+      <div className="rounded-[20px] bg-[#f8f8f8] px-4 py-4">
+        <div className="space-y-2">
           {items.map(([label, value]) => (
-            <div key={label} className="grid grid-cols-[58px_1fr] gap-3 text-sm">
-              <span className="text-neutral-500">{label}</span>
-              <span className="font-semibold leading-6">{value}</span>
+            <div key={label} className="flex min-h-[38px] items-center justify-between gap-4 rounded-[10px] bg-white px-3">
+              <span className="shrink-0 text-[13px] font-normal leading-5 text-[#999999]">{label}</span>
+              <span className="min-w-0 text-right text-[14px] font-normal leading-5 text-[#303030]">{value}</span>
             </div>
           ))}
         </div>
-        <div className="mt-4 rounded-2xl bg-dz-soft px-3 py-3 text-xs leading-5 text-neutral-600">
+        <div className="mt-4 rounded-[12px] bg-white px-3 py-3 text-[12px] leading-5 text-[#999999]">
           若后续想改，比如“第二站换成川菜”，可以在方案页直接输入。
         </div>
       </div>
       {confirmed ? (
-        <div className="mt-4 rounded-2xl bg-green-50 px-4 py-3 text-sm font-black text-green-700">
+        <div className="mt-4 rounded-full bg-[#f0f8f2] px-4 py-3 text-center text-[14px] font-semibold text-[#258b43]">
           已确认，继续生成路线方案
         </div>
       ) : (
-        <button onClick={onConfirm} className="mt-4 w-full rounded-2xl bg-dz-orange px-4 py-4 text-sm font-black text-white">
+        <button
+          onClick={onConfirm}
+          className="mt-6 w-full rounded-full bg-[#ff6430] px-4 py-3.5 text-[15px] font-semibold text-white shadow-[0_8px_20px_rgba(255,100,48,0.24)] active:scale-[0.99]"
+        >
           确定，开始规划
         </button>
       )}
+      {/* 底部留白：防止确定按钮被输入框遮挡 */}
+      <div className="h-[120px]" />
     </motion.section>
   );
 }
@@ -4235,42 +4579,19 @@ function TimelineStop({
   );
 }
 
-const recentConversationRecords = [
-  {
-    title: "今天下午约会路线",
-    meta: "今天 14:05 · 已生成 3 套方案",
-    summary: "低排队、吃饭、看展、甜品收尾"
-  },
-  {
-    title: "周末轻松拍照路线",
-    meta: "昨天 20:18 · 已微调少走路",
-    summary: "咖啡馆、街区、晚餐不赶时间"
-  },
-  {
-    title: "临时朋友聚餐",
-    meta: "6 月 5 日 · 快速问答转规划",
-    summary: "顺路甜品、打车友好、预算 ¥100-200"
-  },
-  {
-    title: "附近营业便利店",
-    meta: "6 月 4 日 · 普通 POI 问答",
-    summary: "只返回 answer + related_pois + trace"
-  },
-  {
-    title: "五个人明天下午安排",
-    meta: "6 月 2 日 · 追问 2 轮",
-    summary: "人数、时间、餐饮偏好已补全"
-  }
-];
 
 function SettingsDrawer({
   onClose,
   onNewChat,
-  onOpenHistory
+  onOpenHistory,
+  traces,
+  onSelectTrace
 }: {
   onClose: () => void;
   onNewChat: () => void;
   onOpenHistory: () => void;
+  traces: TraceSummary[];
+  onSelectTrace: (id: string) => void;
 }) {
   return (
     <motion.div
@@ -4315,19 +4636,22 @@ function SettingsDrawer({
             </div>
 
             <div className="mt-3 space-y-2">
-              {recentConversationRecords.slice(0, 3).map((record) => (
+              {traces.length > 0 ? traces.slice(0, 3).map((trace) => (
                 <button
-                  key={record.title}
+                  key={trace.id}
                   type="button"
+                  onClick={() => onSelectTrace(trace.id)}
                   className="grid w-full grid-cols-[26px_1fr] items-start gap-2 rounded-2xl bg-[#f7f8fb] px-2.5 py-2 text-left"
                 >
                   <Clock3 className="mt-0.5 h-3.5 w-3.5 text-[#7f8eff]" />
                   <span className="min-w-0">
-                    <span className="block truncate text-[12px] font-black text-[#20283a]">{record.title}</span>
-                    <span className="mt-0.5 block truncate text-[10px] font-semibold text-[#8a91a0]">{record.meta}</span>
+                    <span className="block truncate text-[12px] font-black text-[#20283a]">{trace.user_goal || "未命名"}</span>
+                    <span className="mt-0.5 block truncate text-[10px] font-semibold text-[#8a91a0]">{trace.status === "completed" ? "已完成" : trace.status} · {trace.event_count} 事件</span>
                   </span>
                 </button>
-              ))}
+              )) : (
+                <p className="px-2 py-2 text-[11px] text-[#8a91a0]">暂无对话历史</p>
+              )}
             </div>
 
             <button
@@ -4349,7 +4673,7 @@ function SettingsDrawer({
   );
 }
 
-function ConversationHistoryPage({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+function ConversationHistoryPage({ onBack, onClose, traces, onSelectTrace }: { onBack: () => void; onClose: () => void; traces: TraceSummary[]; onSelectTrace: (id: string) => void }) {
   return (
     <motion.section
       className="absolute inset-0 z-50 flex flex-col overflow-hidden bg-[#f6f7fb] text-[#20283a]"
@@ -4370,22 +4694,23 @@ function ConversationHistoryPage({ onBack, onClose }: { onBack: () => void; onCl
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div className="mb-3 rounded-2xl bg-white px-3 py-2 text-[12px] font-semibold text-[#8a91a0] shadow-sm">
-          V2 使用 Mock 历史，也就是本地样例数据模拟真实对话记录。
-        </div>
         <div className="space-y-3">
-          {recentConversationRecords.map((record) => (
-            <button key={record.title} type="button" className="w-full rounded-[20px] bg-white p-4 text-left shadow-sm">
+          {traces.length > 0 ? traces.map((trace) => (
+            <button key={trace.id} type="button" onClick={() => onSelectTrace(trace.id)} className="w-full rounded-[20px] bg-white p-4 text-left shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h3 className="truncate text-sm font-black">{record.title}</h3>
-                  <p className="mt-1 text-[11px] font-semibold text-[#8a91a0]">{record.meta}</p>
+                  <h3 className="truncate text-sm font-black">{trace.user_goal || "未命名"}</h3>
+                  <p className="mt-1 text-[11px] font-semibold text-[#8a91a0]">{trace.status === "completed" ? "已完成" : trace.status} · {trace.event_count} 事件 · {trace.total_duration_ms}ms</p>
                 </div>
                 <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-[#b4bac5]" />
               </div>
-              <p className="mt-3 text-xs leading-5 text-[#66708a]">{record.summary}</p>
+              {trace.route_score != null && (
+                <p className="mt-3 text-xs leading-5 text-[#66708a]">路线评分: {trace.route_score}</p>
+              )}
             </button>
-          ))}
+          )) : (
+            <p className="rounded-2xl bg-white p-6 text-center text-sm text-[#8a91a0] shadow-sm">暂无对话历史</p>
+          )}
         </div>
       </div>
     </motion.section>
@@ -4398,12 +4723,17 @@ function SettingsView() {
   const preferenceDetectionEnabled = useDemoStore((state) => state.preferenceDetectionEnabled);
   const dataAuthorizationEnabled = useDemoStore((state) => state.dataAuthorizationEnabled);
   const userPreferences = useDemoStore((state) => state.userPreferences);
+  const appliedMockUsers = useDemoStore((state) => state.appliedMockUsers);
   const setRequireRequirementConfirmation = useDemoStore((state) => state.setRequireRequirementConfirmation);
   const setPreferenceDetectionEnabled = useDemoStore((state) => state.setPreferenceDetectionEnabled);
   const setDataAuthorizationEnabled = useDemoStore((state) => state.setDataAuthorizationEnabled);
   const setUserPreferences = useDemoStore((state) => state.setUserPreferences);
   const removeUserPreference = useDemoStore((state) => state.removeUserPreference);
   const updateUserPreference = useDemoStore((state) => state.updateUserPreference);
+  const updateAppliedUser = useDemoStore((state) => state.updateAppliedUser);
+  const setActiveUserId = useDemoStore((state) => state.setActiveUserId);
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [preferenceSyncStatus, setPreferenceSyncStatus] = useState<"idle" | "loading" | "saved" | "error" | "local">("idle");
   const settings = [
     {
@@ -4428,17 +4758,44 @@ function SettingsView() {
       onChange: setDataAuthorizationEnabled
     }
   ];
-  const profileRows = [
-    ["性别", "不透露"],
-    ["年龄", "青年人"]
+  const activeMockUser = appliedMockUsers.find((user) => user.id === activeUserId) ?? appliedMockUsers[0];
+
+  function startEdit(field: string, currentValue: string) {
+    setEditingField(field);
+    setEditDraft(currentValue);
+  }
+
+  function commitEdit(field: string) {
+    if (!activeMockUser) return;
+    const trimmed = editDraft.trim();
+    if (!trimmed) { setEditingField(null); return; }
+    if (field === "用户 ID") {
+      updateAppliedUser(activeMockUser.id, { id: trimmed });
+      setActiveUserId(trimmed);
+    } else if (field === "性别") {
+      updateAppliedUser(activeMockUser.id, { gender: trimmed });
+    } else if (field === "年龄") {
+      const age = Number(trimmed);
+      if (!isNaN(age) && age > 0) updateAppliedUser(activeMockUser.id, { age });
+    } else if (field === "职业") {
+      updateAppliedUser(activeMockUser.id, { occupation: trimmed });
+    }
+    setEditingField(null);
+  }
+
+  const profileRows: Array<[string, string]> = [
+    ["用户 ID", activeMockUser?.id ?? (activeUserId || "anonymous")],
+    ["性别", activeMockUser?.gender ?? "不透露"],
+    ["年龄", typeof activeMockUser?.age === "number" ? `${activeMockUser.age}` : "青年人"],
+    ["职业", activeMockUser?.occupation ?? "未设置"]
   ];
   const fixedPreferences = [
-    ["常用出行区域", ["望京", "大山子", "徐汇区"]],
-    ["餐饮口味", ["川菜", "日料", "甜品"]],
-    ["消费水平", ["¥100-200"]],
-    ["出行方式", ["步行", "打车"]],
-    ["兴趣标签", ["小众去处", "看展", "安静聊天"]],
-    ["特殊需求", ["少排队"]]
+    ["常用出行区域", activeMockUser?.frequent_areas?.length ? activeMockUser.frequent_areas : ["望京", "大山子", "徐汇区"]],
+    ["餐饮/体验偏好", activeMockUser?.preferences?.length ? activeMockUser.preferences : ["川菜", "日料", "甜品"]],
+    ["避雷点", activeMockUser?.avoidances?.length ? activeMockUser.avoidances : ["少排队"]],
+    ["消费水平", [activeMockUser?.budget_per_person ? `¥${activeMockUser.budget_per_person}/人` : "¥100-200"]],
+    ["出行方式", [activeMockUser?.transport_preference ?? "步行 + 打车"]],
+    ["兴趣标签", activeMockUser?.lifestyle_tags?.length ? activeMockUser.lifestyle_tags : ["小众去处", "看展", "安静聊天"]]
   ];
 
   useEffect(() => {
@@ -4509,13 +4866,30 @@ function SettingsView() {
         <h3 className="text-sm font-black">个人基础信息</h3>
         <div className="mt-3 space-y-2">
           {profileRows.map(([label, value]) => (
-            <button key={label} type="button" className="flex w-full items-center justify-between rounded-2xl bg-[#f7f8fb] px-3 py-2.5 text-left">
-              <span className="text-xs font-black text-[#66708a]">{label}</span>
-              <span className="flex items-center gap-1 text-xs font-semibold text-[#20283a]">
-                {value}
-                <ChevronRight className="h-3.5 w-3.5 text-[#b4bac5]" />
-              </span>
-            </button>
+            <div key={label}>
+              {editingField === label ? (
+                <div className="flex items-center gap-2 rounded-2xl bg-[#f7f8fb] px-3 py-2.5">
+                  <span className="text-xs font-black text-[#66708a]">{label}</span>
+                  <input
+                    type="text"
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onBlur={() => commitEdit(label)}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitEdit(label); if (e.key === "Escape") setEditingField(null); }}
+                    autoFocus
+                    className="min-w-0 flex-1 bg-transparent text-right text-xs font-semibold text-[#20283a] outline-none"
+                  />
+                </div>
+              ) : (
+                <button type="button" onClick={() => startEdit(label, value)} className="flex w-full items-center justify-between rounded-2xl bg-[#f7f8fb] px-3 py-2.5 text-left">
+                  <span className="text-xs font-black text-[#66708a]">{label}</span>
+                  <span className="flex items-center gap-1 text-xs font-semibold text-[#20283a]">
+                    {value}
+                    <Pencil className="h-3 w-3 text-[#b4bac5]" />
+                  </span>
+                </button>
+              )}
+            </div>
           ))}
         </div>
       </section>
@@ -4716,24 +5090,6 @@ function agentDisplayLabel(agentName: string) {
     PlanExplanationAgent: "解释方案"
   };
   return labels[agentName] ?? agentName;
-}
-
-function agentUserFacingDetail(step: RunningAgentStep, index: number) {
-  const labels: Record<string, string> = {
-    InteractionRouterAgent: "先判断这是新规划、补全回答、微调、换方向还是普通问答。",
-    ConstraintDiscoveryAgent: "把目标、硬约束、软约束和缺失信息写进约束账本。",
-    UserPreferenceAgent: "读取你已授权的历史收藏、评分、去过的店和长期偏好。",
-    ContextGroundingAgent: "调用 Mock POI、UGC、地图、排队、天气和交通 provider 补齐事实。",
-    PlanSolverAgent: "按时间窗、POI 类型和交通方式生成多套候选路线。",
-    PlanEvaluatorAgent: "检查营业、排队、天气、交通、预算和偏好约束，并排序 3 个方案。",
-    PlanExplanationAgent: "把路线理由、风险提醒和每站推荐点整理成用户能看懂的话。"
-  };
-
-  return labels[step.agent] ?? [
-    "正在读取本轮请求里的关键信息。",
-    "正在调用本地 Mock 工具补齐上下文。",
-    "正在把候选结果整理成可执行方案。"
-  ][index % 3];
 }
 
 function buildClarificationAnswers(
@@ -5581,9 +5937,31 @@ function directAnswerFromChatResponse(question: string, response: ChatResponsePa
   const answerProvider = response.answer_provider;
   const fallbackReason = response.fallback_reason;
 
+  // 从 trace events 提取 Agent 摘要行
+  const traceEvents = response.trace?.events ?? [];
+  const agentSteps: AnsweringAgentStep[] = [];
+  for (const event of traceEvents) {
+    if (event.type === "agent_started" && event.agent === "InteractionRouterAgent") {
+      agentSteps.push({ id: event.id + "-understand", label: "理解你的需求", status: "completed", detail: "已识别意图" });
+    }
+    if (event.type === "candidate_retrieved") {
+      const count = (event.tool_output as Record<string, unknown>)?.search_results_count;
+      agentSteps.push({
+        id: event.id + "-search",
+        label: count ? `搜索到 ${count} 家相关店铺` : "搜索附近 POI",
+        status: "completed",
+        detail: count ? `已筛选 Top ${Math.min(5, Number(count))}` : undefined,
+      });
+    }
+    if (event.type === "chat_answered") {
+      agentSteps.push({ id: event.id + "-answer", label: "生成回答", status: "completed" });
+    }
+  }
+
   return {
     question,
     answer: response.answer,
+    agentSteps: agentSteps.length > 0 ? agentSteps : undefined,
     poiHints: response.related_pois.map((poi) => {
       const queueMinutes = poi.queue_minutes ?? poi.queueMinutes;
       const avgPrice = poi.avg_price ?? poi.avgPrice;
@@ -5630,6 +6008,54 @@ function directAnswerFromChatResponse(question: string, response: ChatResponsePa
   };
 }
 
+/** Mock 历史回放：根据用户问题生成模拟回答文本 */
+function getMockChatAnswer(goal: string): string {
+  const normalized = goal.replace(/\s/g, "");
+  if (/(日料|寿司|刺身|omakase)/.test(normalized)) {
+    return "附近有几家口碑不错的日料店，我按距离和排队情况帮你筛了一下。想少排队的话优先看望京 SOHO 和悠乐汇内的店，饭点前到基本不用等。";
+  }
+  if (/(咖啡|茶饮|奶茶|坐坐)/.test(normalized)) {
+    return "如果只是想找个地方坐坐，建议先看低排队、座位相对稳定的茶饮和咖啡店。望京 SOHO 内更方便，路边独立店更安静。";
+  }
+  if (/(餐厅|吃什么|吃饭|火锅|西餐|小吃)/.test(normalized)) {
+    return "我先按「附近、排队少、口碑稳定」给你快速筛了一组。想要完整吃饭加逛街路线时，可以继续说「帮我规划一条路线」。";
+  }
+  return "我先按附近 POI、营业状态和大众点评口碑做了快速回答。如果你想要多站行程，可以直接说「帮我规划一条路线」。";
+}
+
+/** Mock 历史回放：根据用户问题生成模拟 POI 列表 */
+function getMockChatPois(goal: string): PoiHint[] {
+  const normalized = goal.replace(/\s/g, "");
+  if (/(日料|寿司|刺身|omakase)/.test(normalized)) {
+    return [
+      { id: "mock-poi-sushi-1", name: "鮨场寿司 望京店", category: "food", address: "望京 SOHO T2 一层", rating: 4.7, meta: "约 430m · 人均 ¥168 · 排队约 12 分", reason: "口碑稳定，午市性价比高，推荐午间套餐。", recommendedDishes: ["三文鱼刺身", "鳗鱼饭", "午市套餐"], openHours: "11:00-22:00", source: "mock" as const },
+      { id: "mock-poi-sushi-2", name: "隐鮨 Omakase", category: "food", address: "悠乐汇 B1", rating: 4.8, meta: "约 620m · 人均 ¥320 · 需预约", reason: "品质最高，适合纪念日或重要约会，需提前预约。", recommendedDishes: ["主厨 Omakase", "海胆", "和牛"], openHours: "17:30-22:00", source: "mock" as const },
+      { id: "mock-poi-sushi-3", name: "鱼清居酒屋", category: "food", address: "大山子路口", rating: 4.5, meta: "约 1.1km · 人均 ¥95 · 排队约 5 分", reason: "居酒屋风格，适合小酌，不用等太久。", recommendedDishes: ["烤秋刀鱼", "味噌汤", "梅酒"], openHours: "11:30-23:30", source: "mock" as const },
+      { id: "mock-poi-sushi-4", name: "松子日本料理 方恒店", category: "food", address: "方恒国际 2F", rating: 4.4, meta: "约 890m · 人均 ¥135", reason: "老牌日料，菜品稳定，适合家庭聚餐。", recommendedDishes: ["天妇罗", "寿司拼盘", "抹茶甜品"], openHours: "11:00-21:30", source: "mock" as const },
+      { id: "mock-poi-sushi-5", name: "一风堂拉面 望京新世界店", category: "food", address: "望京新世界 B1", rating: 4.2, meta: "约 746m · 人均 ¥58 · 出餐快", reason: "快速解决，出餐 5 分钟，适合赶时间。", recommendedDishes: ["白丸元味", "赤丸新味", "煎饺"], openHours: "10:00-22:00", source: "mock" as const },
+    ];
+  }
+  if (/(咖啡|茶饮|奶茶|坐坐)/.test(normalized)) {
+    return [
+      { id: "mock-poi-tea", name: "小山茶饮廊", category: "dessert", address: "望京 SOHO T2 一层", rating: 4.4, meta: "约 430m · 人均 ¥46", reason: "座位周转比热门咖啡店快，适合短暂停留。", source: "mock" as const },
+      { id: "mock-poi-luckin", name: "Luckin Coffee 望京新世界店", category: "dessert", address: "望京新世界 B1", rating: 4.1, meta: "约 620m · 出杯快", reason: "适合拿了就走，排队风险低。", source: "mock" as const },
+      { id: "mock-poi-bridge", name: "桥下咖啡小馆", category: "dessert", address: "大山子桥东巷", rating: 4.6, meta: "约 1.1km · 安静", reason: "更像休息点，适合聊天，不太适合赶时间。", source: "mock" as const },
+    ];
+  }
+  if (/(餐厅|吃什么|吃饭|火锅|西餐|小吃)/.test(normalized)) {
+    return [
+      { id: "mock-poi-chuanchuan", name: "李串串老店", category: "food", address: "望京西路", rating: 4.5, meta: "1.0km · 热门榜第 1 名", reason: "口味辨识度高，但饭点要注意排队。", source: "mock" as const },
+      { id: "mock-poi-japanese", name: "蓝港日料小食堂", category: "food", address: "蓝色港湾 B1", rating: 4.5, meta: "打车约 10 分钟 · 排队约 7 分", reason: "更适合低排队约会，环境稳定。", source: "mock" as const },
+      { id: "mock-poi-hotpot", name: "半重山老火锅双人套", category: "food", address: "三元桥", rating: 4.3, meta: "994m · 今日免费试", reason: "如果想薅活动，可以优先查看名额。", source: "mock" as const },
+    ];
+  }
+  return [
+    { id: "mock-poi-xinshijie", name: "望京新世界", category: "shopping", address: "望京西路", rating: 4.3, meta: "约 746m · 商场综合体", reason: "吃喝、购物、休息点密集，适合作为默认落点。", source: "mock" as const },
+    { id: "mock-poi-youlehui", name: "望京悠乐汇", category: "shopping", address: "望京街 9 号", rating: 4.2, meta: "约 994m · 生活服务集中", reason: "适合找便利店、咖啡、简餐等即时需求。", source: "mock" as const },
+    { id: "mock-poi-dashanzi", name: "大山子口碑餐饮带", category: "food", address: "大山子路口", rating: 4.1, meta: "约 1.5km · 餐饮选择多", reason: "如果想顺便吃饭，这里比单点搜索更稳。", source: "mock" as const },
+  ];
+}
+
 function createDirectAnswer(question: string): DirectAnswer {
   const normalized = question.replace(/\s/g, "");
 
@@ -5660,7 +6086,7 @@ function createDirectAnswer(question: string): DirectAnswer {
   if (/(餐厅|吃什么|吃饭|火锅|日料|西餐|小吃)/.test(normalized)) {
     return {
       question,
-      answer: "我先按“附近、排队少、口碑稳定”给你快速筛了一组。想要完整吃饭加逛街路线时，可以继续说“帮我规划一条路线”。",
+      answer: `我先按“附近、排队少、口碑稳定”给你快速筛了一组。想要完整吃饭加逛街路线时，可以继续说“帮我规划一条路线”。`,
       poiHints: [
         { id: "mock-poi-chuanchuan", name: "李串串老店", category: "food", address: "望京西路", rating: 4.5, meta: "1.0km · 热门榜第 1 名", reason: "口味辨识度高，但饭点要注意排队。", source: "mock" },
         { id: "mock-poi-japanese", name: "蓝港日料小食堂", category: "food", address: "蓝色港湾 B1", rating: 4.5, meta: "打车约 10 分钟 · 排队约 7 分", reason: "更适合低排队约会，环境稳定。", source: "mock" },
@@ -5671,7 +6097,7 @@ function createDirectAnswer(question: string): DirectAnswer {
 
   return {
     question,
-    answer: "我先按附近 POI、营业状态和大众点评口碑做了快速回答。这个问题更像即时问答，所以不进入完整路线规划；如果你想要多站行程，可以直接说“帮我规划一条路线”。",
+    answer: `我先按附近 POI、营业状态和大众点评口碑做了快速回答。这个问题更像即时问答，所以不进入完整路线规划；如果你想要多站行程，可以直接说“帮我规划一条路线”。`,
     poiHints: [
       { id: "mock-poi-xinshijie", name: "望京新世界", category: "shopping", address: "望京西路", rating: 4.3, meta: "约 746m · 商场综合体", reason: "吃喝、购物、休息点密集，适合作为默认落点。", source: "mock" },
       { id: "mock-poi-youlehui", name: "望京悠乐汇", category: "shopping", address: "望京街 9 号", rating: 4.2, meta: "约 994m · 生活服务集中", reason: "适合找便利店、咖啡、简餐等即时需求。", source: "mock" },

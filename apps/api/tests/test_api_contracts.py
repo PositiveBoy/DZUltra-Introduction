@@ -80,7 +80,7 @@ def test_plan_route_returns_trace_and_three_stops() -> None:
     assert payload["plan"]["score"] >= 90
     assert len(payload["plan"]["stops"]) >= 3
     assert payload["trace"]["status"] == "completed"
-    assert payload["trace"]["runner_mode"] == "deterministic_mock"
+    assert payload["trace"]["runner_mode"] == "real_agent_ai_generated_data"
     assert [agent["name"] for agent in payload["trace"]["agent_strategy"]] == [
         "InteractionRouterAgent",
         "ConstraintDiscoveryAgent",
@@ -110,7 +110,7 @@ def test_plan_route_returns_trace_and_three_stops() -> None:
     assert all(event["metadata"]["estimated_cost_cny"] >= 0 for event in billable_events)
     assert len(payload["plans"]) >= 3
     assert payload["selected_plan_id"] == payload["plan"]["id"]
-    assert payload["generation_metadata"]["runner_mode"] == "deterministic_mock"
+    assert payload["generation_metadata"]["runner_mode"] == "real_agent_ai_generated_data"
     assert payload["planning_status"] == "completed"
     assert payload["interaction_type"] == "new_planning_task"
     assert payload["requirement_summary"]["can_plan"] is True
@@ -207,13 +207,15 @@ def test_plan_route_handles_amap_poi_ids_without_mock_lookup_crash(monkeypatch) 
     first_candidate = retrieval_events[0]["tool_output"]["candidates"][0]
     assert first_candidate["poi"]["source"] == "amap"
     assert first_candidate["poi"]["field_reliability"]["name"] == "verified"
-    assert first_candidate["poi"]["enrichment_reliability"]["queue_minutes"] == "mocked"
+    assert first_candidate["poi"]["enrichment_reliability"]["queue_minutes"] == "generated_validated"
     deep_events = [
         event
         for event in payload["trace"]["events"]
         if event["tool_name"] == "provider_adapter.mock_deep_poi_enrichment"
     ]
-    assert deep_events[0]["tool_output"]["provider_call"]["reliability"] == "mocked"
+    assert deep_events[0]["tool_output"]["provider_call"]["provider"] == "ai_generated_dataset"
+    assert deep_events[0]["tool_output"]["provider_call"]["reliability"] == "generated_validated"
+    assert deep_events[0]["fallback_used"] is False
 
 
 def test_plan_route_records_mock_fallback_for_invalid_amap_response(monkeypatch) -> None:
@@ -470,21 +472,52 @@ def test_profile_preferences_are_detected_updated_deleted_and_persisted() -> Non
     assert preference_id not in _PROFILE_STORE_PATH.read_text(encoding="utf-8")
 
 
-def test_reserved_mock_generation_endpoints_return_fallback_templates() -> None:
-    user_response = client.post(
+def test_ai_generated_dataset_endpoints_report_source_and_fallback_semantics() -> None:
+    new_user_response = client.post(
         "/mock/generate-user",
-        json={"city": "北京", "scenario": "周六下午约会"},
+        json={"city": "北京", "user_type": "new", "customization": "不喜欢排队"},
+    )
+    regular_user_response = client.post(
+        "/mock/generate-user",
+        json={"city": "北京", "user_type": "regular", "customization": "周六下午约会，不喜欢排队"},
     )
     pois_response = client.post(
         "/mock/generate-pois",
-        json={"city": "北京", "area": "三里屯", "theme": "低排队约会路线", "count": 3},
+        json={"city": "北京", "area": "三里屯", "count": 3},
     )
 
-    assert user_response.status_code == 200
-    assert user_response.json()["fallback_used"] is True
-    assert user_response.json()["users"][0]["scenario"] == "周六下午约会"
+    assert new_user_response.status_code == 200
+    new_user_payload = new_user_response.json()
+    assert new_user_payload["source"] == "ai_generated_dataset"
+    assert new_user_payload["data_origin"] == "ai_generated_dataset"
+    assert new_user_payload["fallback_used"] is False
+    assert new_user_payload["reliability"] == "generated_validated"
+    assert new_user_payload["users"][0]["user_type"] == "new"
+    assert new_user_payload["users"][0]["ugc_reviews"] == []
+
+    assert regular_user_response.status_code == 200
+    regular_user_payload = regular_user_response.json()
+    if regular_user_payload["fallback_used"]:
+        assert regular_user_payload["source"] == "fallback_template"
+        assert regular_user_payload["data_origin"] == "fallback_template"
+        assert regular_user_payload["reliability"] == "fallback_template"
+    else:
+        assert regular_user_payload["source"] == "ai_generated_dataset"
+        assert regular_user_payload["data_origin"] == "ai_generated_dataset"
+        assert regular_user_payload["reliability"] == "generated_validated"
+    assert regular_user_payload["users"][0]["scenario"]
+
     assert pois_response.status_code == 200
-    assert len(pois_response.json()["pois"]) == 3
+    pois_payload = pois_response.json()
+    if pois_payload["fallback_used"]:
+        assert pois_payload["source"] == "fallback_template"
+        assert pois_payload["data_origin"] == "fallback_template"
+        assert pois_payload["reliability"] == "fallback_template"
+    else:
+        assert pois_payload["source"] == "ai_generated_dataset"
+        assert pois_payload["data_origin"] == "ai_generated_dataset"
+        assert pois_payload["reliability"] == "generated_validated"
+    assert len(pois_payload["pois"]) == 3
 
 
 def test_chat_respond_returns_answer_related_pois_and_trace() -> None:
@@ -615,9 +648,9 @@ def test_chat_respond_shows_amap_provider_when_available(monkeypatch) -> None:
     for poi in payload["related_pois"]:
         assert poi["source"] == "amap"
         assert poi["reliability"]["name"] == "amap"
-        assert poi["reliability"]["queue_minutes"] == "mocked"
-        assert poi["reliability"]["ugc_summary"] == "mocked"
-        assert poi["reliability"]["recommended_dishes"] == "mocked"
+        assert poi["reliability"]["queue_minutes"] == "generated_validated"
+        assert poi["reliability"]["ugc_summary"] == "generated_validated"
+        assert poi["reliability"]["recommended_dishes"] == "generated_validated"
 
 
 def test_chat_respond_shows_mock_fallback_when_amap_unavailable(monkeypatch) -> None:
@@ -660,13 +693,13 @@ def test_chat_respond_shows_mock_fallback_when_amap_unavailable(monkeypatch) -> 
     provider_call = retrieval_events[0]["tool_output"]["provider_call"]
     assert provider_call["fallback_used"] is True
     assert provider_call["fallback_provider"] == "mock_poi_search"
-    # 每个 related_poi 的 reliability 中所有字段标记 "mocked"
+    # 高德不可用时 POI 检索 fallback；深度字段仍保持 AI 生成真实结构数据口径
     for poi in payload["related_pois"]:
-        assert poi["source"] == "mock"
-        assert poi["reliability"]["name"] == "mocked"
-        assert poi["reliability"]["queue_minutes"] == "mocked"
-        assert poi["reliability"]["ugc_summary"] == "mocked"
-        assert poi["reliability"]["recommended_dishes"] == "mocked"
+        assert poi["source"] == "ai_generated_dataset"
+        assert poi["reliability"]["name"] == "generated_validated"
+        assert poi["reliability"]["queue_minutes"] == "generated_validated"
+        assert poi["reliability"]["ugc_summary"] == "generated_validated"
+        assert poi["reliability"]["recommended_dishes"] == "generated_validated"
 
 
 def test_interactions_respond_routes_nearby_cafe_question_to_chat_answer() -> None:

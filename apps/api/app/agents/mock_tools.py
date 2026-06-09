@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from app.data.mock_data import MOCK_POIS, MOCK_USERS, SAMPLE_ROUTE
+from app.data.mock_data import MOCK_POIS, MOCK_USERS, SAMPLE_ROUTE, get_active_users, get_active_pois
 from app.models.schemas import (
     MapPoint,
     MockPoi,
@@ -75,7 +75,7 @@ def mock_intent_parser(goal: str, city: str, constraints: list[str]) -> dict:
 
 
 def mock_user_profile_lookup(user_id: str, intent: dict) -> dict:
-    user = next((item for item in MOCK_USERS if item.id == user_id), DEFAULT_USER)
+    user = next((item for item in get_active_users() if item.id == user_id), DEFAULT_USER)
     preferences = list(dict.fromkeys(user.preferences + intent["preferences"]))
     priority_weights = user.priority_weights or {
         "queue": 0.34 if "低排队" in preferences else 0.24,
@@ -98,6 +98,46 @@ def mock_user_profile_lookup(user_id: str, intent: dict) -> dict:
     }
 
 
+def _ai_generated_poi_payload(poi: MockPoi) -> dict:
+    payload = poi.model_dump()
+    # 区分数据来源：注入数据（来自 AI Mock 生成器）vs 静态 JSON 数据
+    is_injected = getattr(poi, "_injected", False) or payload.get("data_origin") == "ai_generated_dataset"
+    origin = "ai_generated_dataset" if is_injected else "static_mock_json"
+    reliability_level = "generated_validated" if is_injected else "mocked"
+    payload["source"] = origin
+    payload["data_origin"] = origin
+    payload["provider_name"] = origin
+    payload["generated_by"] = payload.get("generated_by") or ("MockDataAgent" if is_injected else "StaticJsonLoader")
+    payload["schema_version"] = payload.get("schema_version") or "v3-ai-generated-poi-001"
+    payload["data_reliability"] = reliability_level
+    payload["reliability"] = {
+        **payload.get("reliability", {}),
+        "name": reliability_level,
+        "address": reliability_level,
+        "latitude": reliability_level,
+        "longitude": reliability_level,
+        "rating": reliability_level,
+        "queue_minutes": reliability_level,
+        "ugc_summary": reliability_level,
+        "recommended_dishes": reliability_level,
+    }
+    payload["field_reliability"] = {
+        **payload.get("field_reliability", {}),
+        "name": reliability_level,
+        "category": reliability_level,
+        "area": reliability_level,
+        "rating": reliability_level,
+    }
+    payload["enrichment_reliability"] = {
+        **payload.get("enrichment_reliability", {}),
+        "queue_minutes": reliability_level,
+        "visit_duration_minutes": reliability_level,
+        "ugc_summary": reliability_level,
+        "recommended_dishes": reliability_level,
+    }
+    return payload
+
+
 def mock_poi_search(intent: dict, profile: dict, weather_constraints: dict | None = None) -> dict:
     candidates_by_category: dict[str, list[dict]] = defaultdict(list)
     rejected = []
@@ -114,7 +154,7 @@ def mock_poi_search(intent: dict, profile: dict, weather_constraints: dict | Non
     outdoor_categories = {"entertainment"}  # outdoor/park-like categories
     indoor_categories = {"food", "culture", "shopping", "dessert"}
 
-    for poi in MOCK_POIS:
+    for poi in get_active_pois():
         booking_violation = _advance_booking_violation(poi, intent)
         if booking_violation:
             rejected.append({"poi_id": poi.id, "reason": booking_violation, "score": 0})
@@ -144,7 +184,7 @@ def mock_poi_search(intent: dict, profile: dict, weather_constraints: dict | Non
             reason = f"{reason} {weather_penalty_reason}。"
 
         candidate = {
-            "poi": poi.model_dump(),
+            "poi": _ai_generated_poi_payload(poi),
             "score": score,
             "reason": reason,
             "preference_hits": preference_hits,
@@ -185,7 +225,7 @@ def mock_poi_search(intent: dict, profile: dict, weather_constraints: dict | Non
     if len(selected) < 3:
         available_pois = [poi for poi in MOCK_POIS if not _advance_booking_violation(poi, intent)]
         selected = [
-            {"poi": poi.model_dump(), "score": 90, "reason": "路线模板兜底 POI。", "preference_hits": poi.tags, "weather_penalty": None}
+            {"poi": _ai_generated_poi_payload(poi), "score": 90, "reason": "路线模板兜底 POI。", "preference_hits": poi.tags, "weather_penalty": None}
             for poi in available_pois
         ]
 
@@ -207,12 +247,24 @@ def mock_route_scheduler(
     route_theme: str,
     time_window: str = "14:00-18:30",
     group_size: int = 1,
+    route_matrix: dict | None = None,
 ) -> RoutePlan:
-    stops, total_minutes = _scheduled_stops_for_candidates(candidates[:3], time_window, group_size)
+    stops, total_minutes = _scheduled_stops_for_candidates(candidates[:3], time_window, group_size, route_matrix)
 
     if len(stops) < 3:
         sample_route = SAMPLE_ROUTE.model_copy(deep=True)
         return sample_route.model_copy(update={"todo_items": _todo_items_for_stops(sample_route.stops)}, deep=True)
+
+    transport_summary = "步行 + 短程打车，整体移动压力低"
+    if route_matrix and route_matrix.get("legs"):
+        total_distance = sum(leg.get("distance_meters", 0) for leg in route_matrix["legs"])
+        total_duration = sum(leg.get("duration_seconds", 0) for leg in route_matrix["legs"])
+        if total_distance > 0 and total_duration > 0:
+            avg_speed = total_distance / 1000 / (total_duration / 3600)
+            if avg_speed > 25:
+                transport_summary = f"站点间距约 {round(total_distance/1000, 1)} km，打车顺畅，移动轻松"
+            else:
+                transport_summary = f"站点间距约 {round(total_distance/1000, 1)} km，建议打车+地铁组合"
 
     return RoutePlan(
         id="route-deterministic-001",
@@ -223,9 +275,9 @@ def mock_route_scheduler(
         score=0,
         total_minutes=total_minutes,
         highlights=[],
-        map_points=_map_points_for(stops),
-        transport_summary="步行 + 短程打车，整体移动压力低",
-        transports=_default_transports(),
+        map_points=_map_points_for(stops, candidates[:3]),
+        transport_summary=transport_summary,
+        transports=_transports_from_matrix(route_matrix),
         stops=stops,
         constraints=[],
         todo_items=_todo_items_for_stops(stops),
@@ -378,6 +430,75 @@ def mock_experience_copywriter(route: RoutePlan, retrieval: dict, constraints: l
     )
 
 
+def llm_experience_copywriter(
+    route: RoutePlan,
+    retrieval: dict,
+    constraints: list[RouteConstraint],
+    weather_constraints: dict | None = None,
+    route_matrix: dict | None = None,
+) -> dict[str, str]:
+    """用 LLM 生成动态体验文案，返回需要更新的字段。"""
+    from app.providers.adapter import provider_adapter
+
+    poi_by_id = poi_lookup(retrieval)
+    stop_descriptions = []
+    for stop in route.stops:
+        poi = poi_by_id.get(stop.poi_id)
+        if poi:
+            stop_descriptions.append(f"- {poi.name}（{poi.category}）：评分{poi.rating}，排队约{poi.queue_minutes}分钟，{poi.ugc_summary or '暂无评价'}")
+
+    satisfied = [c.label for c in constraints if c.satisfied]
+    weather_note = ""
+    if weather_constraints:
+        if weather_constraints.get("high_precipitation"):
+            weather_note = "天气有降水，"
+        elif weather_constraints.get("good_weather"):
+            weather_note = "天气良好，"
+
+    distance_info = ""
+    if route_matrix and route_matrix.get("legs"):
+        total_dist = sum(leg.get("distance_meters", 0) for leg in route_matrix["legs"])
+        distance_info = f"总移动距离约{round(total_dist/1000, 1)}km，"
+
+    messages = [
+        {"role": "system", "content": "你是一个本地生活路线推荐文案专家。根据路线事实生成简洁、有吸引力的路线文案。只输出JSON，不要其他内容。"},
+        {"role": "user", "content": f"请为以下路线生成文案：\n路线主题：{route.title}\n站点：\n{chr(10).join(stop_descriptions)}\n{weather_note}{distance_info}满足的约束：{'、'.join(satisfied) if satisfied else '无'}\n\n请输出JSON：{{\"subtitle\": \"一句话路线亮点\", \"highlights\": [\"亮点1\", \"亮点2\", \"亮点3\", \"亮点4\"], \"transport_summary\": \"交通方式概述\"}}"},
+    ]
+
+    fallback_subtitle = "吃饭、看展、甜品顺路串联"
+    fallback_highlights = ["平均排队小于 10 分钟", "餐饮 + 文化 + 甜品", "移动距离短", *(satisfied[:2] or ["路线紧凑"])]
+    fallback_transport = "步行 + 短程打车，整体移动压力低"
+
+    result = provider_adapter.llm_chat_completion(
+        messages,
+        purpose="experience_copywriter",
+        fallback_content='{"subtitle": "' + fallback_subtitle + '", "highlights": ' + str(fallback_highlights).replace("'", '"') + ', "transport_summary": "' + fallback_transport + '"}',
+        temperature=0.4,
+        max_tokens=300,
+    )
+
+    try:
+        content = result.data
+        if isinstance(content, str):
+            import json
+            parsed = json.loads(content)
+        elif isinstance(content, dict):
+            parsed = content
+        else:
+            parsed = {}
+        return {
+            "subtitle": parsed.get("subtitle", fallback_subtitle),
+            "highlights": parsed.get("highlights", fallback_highlights),
+            "transport_summary": parsed.get("transport_summary", fallback_transport),
+        }
+    except Exception:
+        return {
+            "subtitle": fallback_subtitle,
+            "highlights": fallback_highlights,
+            "transport_summary": fallback_transport,
+        }
+
+
 def mock_plan_evaluator(
     candidate_plans: list[RoutePlan],
     retrieval: dict,
@@ -514,7 +635,7 @@ def mock_plan_evaluator(
     }
 
 
-def mock_route_judge(route: RoutePlan, constraints: list[RouteConstraint], profile: dict, weather_constraints: dict | None = None) -> dict:
+def mock_route_judge(route: RoutePlan, constraints: list[RouteConstraint], profile: dict, weather_constraints: dict | None = None, route_matrix: dict | None = None) -> dict:
     """Score a route across 10 explainable dimensions.
 
     Dimensions and max points:
@@ -556,9 +677,23 @@ def mock_route_judge(route: RoutePlan, constraints: list[RouteConstraint], profi
 
     # --- traffic (0-8) ---
     traffic_score = 6  # default moderate
-    time_window = profile.get("time_window", "14:00-18:30")
-    if "17:00" in time_window or "18:00" in time_window:
-        traffic_score = 4  # rush hour penalty
+    if route_matrix and route_matrix.get("legs"):
+        total_distance = sum(leg.get("distance_meters", 0) for leg in route_matrix["legs"])
+        total_duration = sum(leg.get("duration_seconds", 0) for leg in route_matrix["legs"])
+        if total_distance > 0 and total_duration > 0:
+            avg_speed_kmh = (total_distance / 1000) / (total_duration / 3600)
+            if avg_speed_kmh > 30:
+                traffic_score = 8  # 交通顺畅
+            elif avg_speed_kmh > 20:
+                traffic_score = 6  # 正常
+            elif avg_speed_kmh > 10:
+                traffic_score = 4  # 缓行
+            else:
+                traffic_score = 2  # 严重拥堵
+    else:
+        time_window = profile.get("time_window", "14:00-18:30")
+        if "17:00" in time_window or "18:00" in time_window:
+            traffic_score = 4  # rush hour penalty
 
     # --- weather_fit (0-10) ---
     outdoor_categories = {"entertainment"}
@@ -727,11 +862,12 @@ def mock_multi_plan_builder(
             selected_candidates.append(candidate)
 
         if len(selected_candidates) == 3:
-            stops, total_minutes = _scheduled_stops_for_candidates(selected_candidates, time_window, group_size)
+            stops, total_minutes = _scheduled_stops_for_candidates(selected_candidates, time_window, group_size, route_matrix)
         else:
             stops, total_minutes = _reschedule_existing_stops(
                 [*fallback_stops, *primary_plan.stops[len(fallback_stops) : 3]],
                 time_window,
+                route_matrix,
             )
 
         # --- Feasibility filter ---
@@ -765,9 +901,9 @@ def mock_multi_plan_builder(
                     "score": max(0, primary_plan.score + variant["score_delta"]),
                     "total_minutes": total_minutes,
                     "stops": stops,
-                    "map_points": _map_points_for(stops),
-                    "transport_summary": "步行 + 短程打车，站点之间不做大跨度移动",
-                    "transports": _default_transports(),
+                    "map_points": _map_points_for(stops, selected_candidates),
+                    "transport_summary": _transport_summary_from_matrix(route_matrix),
+                    "transports": _transports_from_matrix(route_matrix),
                     "constraints": constraints,
                     "todo_items": _todo_items_for_stops(stops),
                 },
@@ -790,7 +926,7 @@ def mock_multi_plan_builder(
                 if candidate:
                     selected_candidates.append(candidate)
             if len(selected_candidates) == 3:
-                stops, total_minutes = _scheduled_stops_for_candidates(selected_candidates, time_window, group_size)
+                stops, total_minutes = _scheduled_stops_for_candidates(selected_candidates, time_window, group_size, route_matrix)
                 plans.append(
                     primary_plan.model_copy(
                         update={
@@ -802,9 +938,9 @@ def mock_multi_plan_builder(
                             "score": max(0, primary_plan.score + variant["score_delta"]),
                             "total_minutes": total_minutes,
                             "stops": stops,
-                            "map_points": _map_points_for(stops),
-                            "transport_summary": "步行 + 短程打车，站点之间不做大跨度移动",
-                            "transports": _default_transports(),
+                            "map_points": _map_points_for(stops, selected_candidates),
+                            "transport_summary": _transport_summary_from_matrix(route_matrix),
+                            "transports": _transports_from_matrix(route_matrix),
                             "constraints": constraints,
                             "todo_items": _todo_items_for_stops(stops),
                         },
@@ -1012,6 +1148,7 @@ def _scheduled_stops_for_candidates(
     candidates: list[dict],
     time_window: str,
     group_size: int,
+    route_matrix: dict | None = None,
 ) -> tuple[list[RouteStop], int]:
     if not candidates:
         return [], 0
@@ -1020,7 +1157,7 @@ def _scheduled_stops_for_candidates(
     durations = [_duration_for_poi(poi, group_size) for poi in pois]
     route_start, route_end = _parse_window_minutes(time_window)
     first_arrival = route_start + (20 if route_end - route_start >= 180 else 0)
-    travel_gaps = [0, 20, 18, 15]
+    travel_gaps = _travel_gaps_from_matrix(route_matrix, len(pois))
     travel_total = sum(travel_gaps[1 : len(pois)])
     available_minutes = max(90, route_end - first_arrival)
     required_minutes = sum(durations) + travel_total
@@ -1029,21 +1166,23 @@ def _scheduled_stops_for_candidates(
         reduce_each = max(0, (required_minutes - available_minutes + len(durations) - 1) // len(durations))
         durations = [max(35, duration - reduce_each) for duration in durations]
 
+    real_distances = _distances_from_matrix(route_matrix, len(pois))
+
     current = first_arrival
     stops = []
     for index, (candidate, poi, duration) in enumerate(zip(candidates, pois, durations, strict=False)):
         if index > 0:
             current += travel_gaps[index]
-        stops.append(_route_stop_from_poi(poi, _format_minutes(current), candidate["reason"], index, duration))
+        stops.append(_route_stop_from_poi(poi, _format_minutes(current), candidate["reason"], index, duration, real_distances[index]))
         current += duration
 
     return stops, current - first_arrival
 
 
-def _reschedule_existing_stops(stops: list[RouteStop], time_window: str) -> tuple[list[RouteStop], int]:
+def _reschedule_existing_stops(stops: list[RouteStop], time_window: str, route_matrix: dict | None = None) -> tuple[list[RouteStop], int]:
     route_start, route_end = _parse_window_minutes(time_window)
     first_arrival = route_start + (20 if route_end - route_start >= 180 else 0)
-    travel_gaps = [0, 20, 18, 15]
+    travel_gaps = _travel_gaps_from_matrix(route_matrix, len(stops[:3]))
     current = first_arrival
     rescheduled = []
     for index, stop in enumerate(stops[:3]):
@@ -1130,7 +1269,9 @@ def _route_stop_from_poi(
     reason: str,
     index: int,
     duration_minutes: int | None = None,
+    distance_from_previous: str | None = None,
 ) -> RouteStop:
+    default_distances = ["起点", "约 1.8 km", "约 2.4 km"]
     return RouteStop(
         poi_id=poi.id,
         poi_name=poi.name,
@@ -1144,7 +1285,7 @@ def _route_stop_from_poi(
         queue_minutes=poi.queue_minutes,
         tags=poi.tags,
         ugc_summary=poi.ugc_summary,
-        distance_from_previous=["起点", "约 1.8 km", "约 2.4 km"][index],
+        distance_from_previous=distance_from_previous or (default_distances[index] if index < len(default_distances) else "约 2 km"),
         actions=_actions_for_poi(poi),
     )
 
@@ -1284,12 +1425,114 @@ def _todo_constraints_for_stop(stop: RouteStop) -> list[dict]:
     return constraints
 
 
-def _map_points_for(stops: list[RouteStop]) -> list[MapPoint]:
+def _map_points_for(stops: list[RouteStop], candidates: list[dict] | None = None) -> list[MapPoint]:
+    """生成地图点位，优先使用 POI 真实坐标。"""
+    if candidates:
+        coords = []
+        for candidate in candidates[:3]:
+            poi_data = candidate.get("poi", {})
+            lng = poi_data.get("longitude") or poi_data.get("lng")
+            lat = poi_data.get("latitude") or poi_data.get("lat")
+            if lng is not None and lat is not None:
+                coords.append((float(lng), float(lat)))
+        if len(coords) == len(stops[:3]) and coords:
+            # Normalize to 0-100 range
+            lngs = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            lng_min, lng_max = min(lngs), max(lngs)
+            lat_min, lat_max = min(lats), max(lats)
+            lng_range = max(lng_max - lng_min, 0.001)
+            lat_range = max(lat_max - lat_min, 0.001)
+            return [
+                MapPoint(
+                    x=round((c[0] - lng_min) / lng_range * 80 + 10),
+                    y=round((1 - (c[1] - lat_min) / lat_range) * 80 + 10),  # invert Y for map display
+                    label=stop.poi_name[:2],
+                )
+                for c, stop in zip(coords, stops[:3])
+            ]
+    # Fallback to hardcoded coordinates
     coordinates = [(18, 68), (48, 38), (78, 58)]
     return [
         MapPoint(x=coordinates[index][0], y=coordinates[index][1], label=stop.poi_name[:2])
         for index, stop in enumerate(stops[:3])
     ]
+
+
+def _travel_gaps_from_matrix(route_matrix: dict | None, num_stops: int) -> list[int]:
+    """从 route_matrix 提取真实移动时间（分钟），fallback 到默认值。"""
+    default_gaps = [0, 20, 18, 15]
+    if not route_matrix or not route_matrix.get("legs"):
+        return default_gaps[:num_stops]
+    legs = route_matrix["legs"]
+    gaps = [0]  # 第一站不需要移动时间
+    for leg in legs[:num_stops - 1]:
+        duration_seconds = leg.get("duration_seconds", 0)
+        if duration_seconds > 0:
+            gaps.append(max(5, round(duration_seconds / 60)))  # 至少 5 分钟
+        else:
+            distance_meters = leg.get("distance_meters", 0)
+            if distance_meters > 0:
+                # 粗略估算：步行 5km/h，打车 30km/h
+                gaps.append(max(5, round(distance_meters / 500)))  # 假设打车
+            else:
+                gaps.append(default_gaps[len(gaps)] if len(gaps) < len(default_gaps) else 15)
+    while len(gaps) < num_stops:
+        gaps.append(default_gaps[len(gaps)] if len(gaps) < len(default_gaps) else 15)
+    return gaps[:num_stops]
+
+
+def _transports_from_matrix(route_matrix: dict | None) -> list[TransportOption]:
+    """从 route_matrix 生成真实交通选项，fallback 到默认值。"""
+    if not route_matrix or not route_matrix.get("legs"):
+        return _default_transports()
+    legs = route_matrix.get("legs", [])
+    total_distance = sum(leg.get("distance_meters", 0) for leg in legs)
+    total_duration_taxi = sum(leg.get("duration_seconds", 0) for leg in legs)
+    walk_duration = round(total_distance / 83)  # 5km/h = 83m/min
+    taxi_cost = max(13, round(13 + total_distance / 1000 * 2.5))  # 起步13+2.5/km
+
+    return [
+        TransportOption(mode="walk", label="步行优先", minutes=max(5, walk_duration), cost="0 元", detail=f"总距离约 {round(total_distance/1000, 1)} km"),
+        TransportOption(mode="taxi", label="打车/网约车", minutes=max(3, round(total_duration_taxi / 60)), cost=f"约 {taxi_cost} 元", detail="站点间打车移动"),
+        TransportOption(mode="metro", label="地铁+步行", minutes=max(5, round(total_duration_taxi / 60 * 1.3)), cost=f"约 {max(3, round(total_distance/1000*2))} 元", detail="高峰期避免路面拥堵"),
+    ]
+
+
+def _distances_from_matrix(route_matrix: dict | None, num_stops: int) -> list[str]:
+    """从 route_matrix 提取真实站点间距离描述。"""
+    default_distances = ["起点", "约 1.8 km", "约 2.4 km"]
+    if not route_matrix or not route_matrix.get("legs"):
+        return default_distances[:num_stops]
+    legs = route_matrix["legs"]
+    distances = ["起点"]
+    for leg in legs[:num_stops - 1]:
+        meters = leg.get("distance_meters", 0)
+        if meters >= 1000:
+            distances.append(f"约 {meters/1000:.1f} km")
+        elif meters > 0:
+            distances.append(f"约 {meters} m")
+        else:
+            distances.append(default_distances[len(distances)] if len(distances) < len(default_distances) else "约 2 km")
+    while len(distances) < num_stops:
+        distances.append(default_distances[len(distances)] if len(distances) < len(default_distances) else "约 2 km")
+    return distances[:num_stops]
+
+
+def _transport_summary_from_matrix(route_matrix: dict | None) -> str:
+    """从 route_matrix 生成交通概述文案。"""
+    default_summary = "步行 + 短程打车，站点之间不做大跨度移动"
+    if not route_matrix or not route_matrix.get("legs"):
+        return default_summary
+    total_distance = sum(leg.get("distance_meters", 0) for leg in route_matrix["legs"])
+    total_duration = sum(leg.get("duration_seconds", 0) for leg in route_matrix["legs"])
+    if total_distance > 0 and total_duration > 0:
+        avg_speed = total_distance / 1000 / (total_duration / 3600)
+        if avg_speed > 25:
+            return f"站点间距约 {round(total_distance/1000, 1)} km，打车顺畅，移动轻松"
+        else:
+            return f"站点间距约 {round(total_distance/1000, 1)} km，建议打车+地铁组合"
+    return default_summary
 
 
 def _default_transports() -> list[TransportOption]:
